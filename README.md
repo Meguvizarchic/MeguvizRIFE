@@ -1,3 +1,5 @@
+<p><img src="docs/brand/MeguvizRIFE.svg" width="96" alt="MeguvizRIFE 图标"></p>
+
 # MeguvizRIFE
 
 独立 RIFE 算法库，当前可运行切片为 **真实 v4.6 CPU FP32 全图 reference**。
