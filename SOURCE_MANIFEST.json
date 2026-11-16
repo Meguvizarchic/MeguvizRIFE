@@ -2,29 +2,34 @@
   "schema_version": 1,
   "files": [
     {
+      "path": ".gitattributes",
+      "size_bytes": 8,
+      "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+    },
+    {
       "path": ".gitignore",
       "size_bytes": 66,
       "sha256": "ff872bdbf4bb1582bb9e511599d00c0d4924562b1a164fcb9bfd5581002787be"
     },
     {
       "path": "cmake/build-info.json.in",
-      "size_bytes": 354,
-      "sha256": "85128f5e1ddda0bccf4a909b749e5aad3d4412d196356ee7288be22317dae158"
+      "size_bytes": 616,
+      "sha256": "09395a8727ef2adb7000d5736b2bd7070fb0fbfc2afac85a7c39734f71962bbd"
     },
     {
       "path": "cmake/build_identity.hpp.in",
-      "size_bytes": 108,
-      "sha256": "e19d9c5dfec207dcd030ef4954ea476278c94b52d78878c66b0e058123f58e85"
+      "size_bytes": 147,
+      "sha256": "6adad79c5623a07507727b1df6c94574d43e59f558b48c7bfb598e204e4008e0"
     },
     {
       "path": "cmake/MeguvizRIFEConfig.cmake.in",
-      "size_bytes": 193,
-      "sha256": "59ebb0f19f5576b1ffc7f9b3232c11c7595074a82e61006a530ae5d6b79ffa33"
+      "size_bytes": 829,
+      "sha256": "c5fbb0f98674a5feb09ca6e02252f0c16a10d4a73d668c139985abeee44dff2d"
     },
     {
       "path": "CMakeLists.txt",
-      "size_bytes": 6342,
-      "sha256": "283a4b4bc902b9f0e5aaabb1d93e0855be3b71a59c2fc435486ea98e635e1feb"
+      "size_bytes": 11102,
+      "sha256": "e188d834ac2efc7e4f6e66178000b4884958478a3e651da1dde557a47085a0fc"
     },
     {
       "path": "CMakePresets.json",
@@ -35,6 +40,26 @@
       "path": "docs/adr/0001-reference-and-domain.md",
       "size_bytes": 1497,
       "sha256": "8a0d0cbcbff5779d7447274973aac2fe2b8691433681126078516996836ef869"
+    },
+    {
+      "path": "docs/adr/0002-compute-gpu-guards.md",
+      "size_bytes": 6011,
+      "sha256": "7431903bd1a06d05ca07b2c60907d6e7621b92c16e33f81497aeae90e3b67aba"
+    },
+    {
+      "path": "docs/adr/0003-job-observation.md",
+      "size_bytes": 2604,
+      "sha256": "41c6147a79df53bf6ad63366e93460c613cc7ed7f96c2eb4c8fed179ea162938"
+    },
+    {
+      "path": "docs/INFERENCE_WORK.md",
+      "size_bytes": 2086,
+      "sha256": "78bf53a9f8e8c05a02f050264b59c9321917df4bc9e56758a6814c3691b363b4"
+    },
+    {
+      "path": "docs/UPLOAD_OWNERSHIP.md",
+      "size_bytes": 2587,
+      "sha256": "ff5d87b97fa23c4fd5bda173395ce4e6dbe32b742ca11366f33affb12b4e4b3c"
     },
     {
       "path": "examples/external_consumer/CMakeLists.txt",
@@ -48,8 +73,8 @@
     },
     {
       "path": "include/meguviz/rife.h",
-      "size_bytes": 3785,
-      "sha256": "0fbbc0e4ddb8d846f500c0c499ff07da4459d94a657530747feaff39bb1819d9"
+      "size_bytes": 11834,
+      "sha256": "69b9fa9fe7b2b48e3785eed3d4c991360de7fc8496bcb6f36bbde96d0d9d52c9"
     },
     {
       "path": "LICENSE",
@@ -57,14 +82,34 @@
       "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
     },
     {
+      "path": "models/catalog/profiles.json",
+      "size_bytes": 5203,
+      "sha256": "c3347fd68ec4c1e2b05e9dbc2659d0d9d4a300f23664b371f29ebc1a7031bc05"
+    },
+    {
       "path": "models/catalog/rife46.manifest.json",
       "size_bytes": 696,
       "sha256": "c23d275e169831f6a12cac912eafdb4e75ede5b6acb164bd079a93c447daa4cc"
     },
     {
+      "path": "models/catalog/shader-contract.json",
+      "size_bytes": 2886,
+      "sha256": "8f4ec3f7ac4e7a4d33b3e8e09317a4f3149975cb420cfa6f6c733ad83e84d328"
+    },
+    {
       "path": "README.md",
-      "size_bytes": 3542,
-      "sha256": "1acdbd51191c9c37e31d1afd63e214ad5d9c7250df6cf8a44424b25ffd22dbc6"
+      "size_bytes": 14546,
+      "sha256": "dab2cebbc9cbe043b99789ffe598235ac7a69f4d99bf138b11f8189bfc2fca0d"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/add_leaky.cpp",
+      "size_bytes": 2594,
+      "sha256": "e63da6039b6725a98859be6bfb172b5b9842e825507876e370b84f5dbbdb65bb"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/add_leaky.h",
+      "size_bytes": 112,
+      "sha256": "0bd6bc376599d1c650355092605a79679dc638461aa02bdca3d7332e66cb4900"
     },
     {
       "path": "src/backends/ncnn/legacy/embed_shader.cmake",
@@ -72,24 +117,59 @@
       "sha256": "78d17322b172e80223cad6cd13fe2ac51405344d8d2bb91a04c91ed82ddc4997"
     },
     {
+      "path": "src/backends/ncnn/legacy/frame_add_leaky.comp",
+      "size_bytes": 1585,
+      "sha256": "a11871efc5483902e30fe8829e87d72b53a4c8177c5b3172c98d2f7229e849ae"
+    },
+    {
       "path": "src/backends/ncnn/legacy/frame_engine.cpp",
-      "size_bytes": 48543,
-      "sha256": "2e2ae904b393d93f7ab8ab49f5abb03bcc6bd71bbbad28fe14745c1430ffcfb3"
+      "size_bytes": 63623,
+      "sha256": "5f9a27aa965aa84af2a37e364300cccffffb1f6e924de559990659495560674e"
     },
     {
       "path": "src/backends/ncnn/legacy/frame_engine.h",
-      "size_bytes": 4430,
-      "sha256": "64806fb1e490a0fdac347596aa04171a4d16c444d304361938871495a5cb207d"
+      "size_bytes": 8292,
+      "sha256": "52db3c8d07fe1bafa3d5ab2df51b4487bf6cf9d9c694cf7eac3fd2bae214003a"
     },
     {
       "path": "src/backends/ncnn/legacy/frame_fused.comp",
-      "size_bytes": 8770,
-      "sha256": "97f5a540506845be304e4a18d4ed001e49b012b280adc0c5c726b6575760afa9"
+      "size_bytes": 8927,
+      "sha256": "19bdc6060dc303be4ff4f1a226105551985ab2895e47f90b5b4f2b73b8ca045d"
     },
     {
       "path": "src/backends/ncnn/legacy/frame_fused_rgb8.comp",
-      "size_bytes": 9055,
-      "sha256": "77a1dcab29bd96ff1b2b26b7de6ffc023c98b76e7392f87be5db634cb0e3af44"
+      "size_bytes": 9212,
+      "sha256": "cc2a39917495c64990d7f193e52c05cd5b462bed6857a0c6ba15ef817863089e"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu.inc",
+      "size_bytes": 22681,
+      "sha256": "5b7a578e965ec85bcb76b4aa9aeb01e2c556011a45e4c1d833ec1245812c8343"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu_image_read.comp",
+      "size_bytes": 642,
+      "sha256": "92534b498686c1898efe894ced21532c923b378d45399322d672e923a8053857"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu_image_write.comp",
+      "size_bytes": 852,
+      "sha256": "6638a34c1bfc1141faeee677b58928e79ffb527d382972e3dbca1350f08b2343"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu_patch.comp",
+      "size_bytes": 1217,
+      "sha256": "7d2267b3adc9d0b7e483228dae98f44114f3d066937ccb1973848923bd647db3"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu_statistics.comp",
+      "size_bytes": 1116,
+      "sha256": "f7e1e89ee99b8c98fcb6749b416cf5422b2ffbb273b76df27f2c7b1d5499d27f"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/frame_gpu_unpack.comp",
+      "size_bytes": 693,
+      "sha256": "b111c95fe123f9d733421f81f23497686be1a0c980a1cb16336235bcaa9ce421"
     },
     {
       "path": "src/backends/ncnn/legacy/frame_postproc.comp",
@@ -107,9 +187,19 @@
       "sha256": "9d02c4148c4be1a708286e20bc9f28c578d52442e03b501c90ec29c02f4f04c3"
     },
     {
+      "path": "src/backends/ncnn/legacy/frame_rgb_owned.inc",
+      "size_bytes": 32962,
+      "sha256": "8e3dbddb89a5b09903f5092cae39ea111b15d64ffee47315be623fa9f9e30b0b"
+    },
+    {
       "path": "src/backends/ncnn/legacy/NOTICE.md",
-      "size_bytes": 2985,
-      "sha256": "1debbaa73b39fe048cb28c2ef81bef0aa07f417dc76024d3a407450d98290baf"
+      "size_bytes": 3067,
+      "sha256": "5c065e4e39b8b418a9bb4a3fde171268c4375f09ec810cd7c0f35c0418538918"
+    },
+    {
+      "path": "src/backends/ncnn/legacy/shader_pipeline.inc",
+      "size_bytes": 6641,
+      "sha256": "2a311b9a32c16bcb65034176630f9d90ee281bb785f1cf38def10d193463a39c"
     },
     {
       "path": "src/backends/ncnn/legacy/upstream/LICENSE",
@@ -118,8 +208,8 @@
     },
     {
       "path": "src/backends/ncnn/legacy/upstream/rife_warp.cpp",
-      "size_bytes": 4846,
-      "sha256": "986b1d20009d90b24d6fc1ade38c0f1a8ba983da5d1c69c9cbf7739b99628eaa"
+      "size_bytes": 4952,
+      "sha256": "202e6581a87c369ecc1de70a1883aa9c9c83d244516b1168dd5e6ba7bf3cd023"
     },
     {
       "path": "src/backends/ncnn/legacy/upstream/rife_warp.h",
@@ -128,23 +218,33 @@
     },
     {
       "path": "src/backends/ncnn/legacy/upstream/warp.comp",
-      "size_bytes": 1924,
-      "sha256": "febf4ce8e214300f92a6d9ab60f1ad8cf7b9adb4d5b62cfc6d0653d527976e08"
+      "size_bytes": 2219,
+      "sha256": "1004756d9c95ba74d14a6bfb913c5ff8619395666f81b5846271f8255ead454c"
     },
     {
       "path": "src/backends/ncnn/legacy/upstream/warp_pack4.comp",
-      "size_bytes": 1960,
-      "sha256": "37f8c40d29d9989df4cff37cb441ef0a42edb783529833acdb0d30c3c7fb7874"
+      "size_bytes": 2259,
+      "sha256": "73af16c83dd12627bda620cfc83581fe870ae5b3546d47bb98b65fdf2f7e73b5"
     },
     {
       "path": "src/cli/main.cpp",
-      "size_bytes": 14905,
-      "sha256": "bdf80a38ff6dcef304ad146da2a75a32acc21d3942213b0b5cd8bd1503b3e1c3"
+      "size_bytes": 35439,
+      "sha256": "45a08f1533cfa92091bc804a85a562996601065cb314583231626d035d0d35b4"
+    },
+    {
+      "path": "src/core/cpu_gpu_bridge.inc",
+      "size_bytes": 9941,
+      "sha256": "ef40d6881ef0dd708471562c6c4ec96fecd67511e3567c81f2a04db82886128a"
     },
     {
       "path": "src/core/rife.cpp",
-      "size_bytes": 18617,
-      "sha256": "edcd0b3fde9de47229ae43adb0aef5052d1aec2460f45fa846c3fa6ecd60705d"
+      "size_bytes": 55835,
+      "sha256": "5749e1bcb59398449bec6a05cb6206f82f627d80d6c373ff39c6a9aa1ba94ea0"
+    },
+    {
+      "path": "src/private/alpha.hpp",
+      "size_bytes": 1082,
+      "sha256": "19681f589d62377c403893023ebb388a6e64f7fc279a9b9c74b95540d15a0406"
     },
     {
       "path": "src/private/catalog.hpp",
@@ -157,9 +257,49 @@
       "sha256": "bfee0fde9abab347426fd9a3eb171a43534b6c6d1d3a60f0ab1a334bfeb8923e"
     },
     {
+      "path": "tests/alpha_boundary.cpp",
+      "size_bytes": 7626,
+      "sha256": "e3896693142493c4bb5c89380efc7276ba5845fe5f710bf817c17a308d95b5f2"
+    },
+    {
       "path": "tests/c_consumer.c",
       "size_bytes": 974,
       "sha256": "8c722ca415a70103f74759fcc8395912de082efb59648595c3a8d1bf03dff228"
+    },
+    {
+      "path": "tests/callback_pool_reentry.cpp",
+      "size_bytes": 4041,
+      "sha256": "a374ed9515005ef8be03774d77c4bfe268950e46e99c6127b1716017a3486187"
+    },
+    {
+      "path": "tests/compare_benchmark_cli.py",
+      "size_bytes": 7699,
+      "sha256": "f1e4ccb06c3d99d692c229e326b4a3d3ac569471634ac7ab699f358cd74458ad"
+    },
+    {
+      "path": "tests/context_lifecycle.cpp",
+      "size_bytes": 19717,
+      "sha256": "4bf3403e271377cb1e90dff7022b9ba8b7dcb5e4fabfc39e0d69a4a07e7e7787"
+    },
+    {
+      "path": "tests/inspect_model_cli.py",
+      "size_bytes": 3219,
+      "sha256": "48697b9a9ca32132069b468a5b8a724f1ac61fe0975e4547cb37bb3eab0cee5a"
+    },
+    {
+      "path": "tests/no_overwrite_cli.py",
+      "size_bytes": 7488,
+      "sha256": "71fc7cd8d2d938282e5f40c3a1e6b0ccd42048befd102c295674e960bcfda1d8"
+    },
+    {
+      "path": "tests/observation_abi.c",
+      "size_bytes": 1199,
+      "sha256": "b4e4e272b2a58518ae6a8e334c9c659dcb40e2e277cacd3418c48c0f94a8b8f0"
+    },
+    {
+      "path": "tests/observation_model.cpp",
+      "size_bytes": 15006,
+      "sha256": "d3cbf0d6b96841bf35c5010d54ea853552a9ac2193f1a431f53d9bc52de73ce7"
     },
     {
       "path": "tests/oracle/frame_engine.cpp",
@@ -197,24 +337,34 @@
       "sha256": "5d28e4d5179d1f809739fff759c33a7ad0b82de75f752f80f1242c2606b0d47a"
     },
     {
-      "path": "tests/inspect_model_cli.py",
-      "size_bytes": 3219,
-      "sha256": "48697b9a9ca32132069b468a5b8a724f1ac61fe0975e4547cb37bb3eab0cee5a"
-    },
-    {
-      "path": "tests/no_overwrite_cli.py",
-      "size_bytes": 6609,
-      "sha256": "9e5d49d0723378f162d0b7049d69340ce9dad6d9cd6b413407bbcfc8b5848d46"
-    },
-    {
       "path": "tests/run_reference.py",
       "size_bytes": 6127,
       "sha256": "94f03cc32a28cd9079638c35090a6af24b7a5f220f3a798699ecedeb862686fa"
     },
     {
-      "path": ".gitattributes",
-      "size_bytes": 8,
-      "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+      "path": "tests/upload_lifecycle.cpp",
+      "size_bytes": 4368,
+      "sha256": "0f5560387835b7c2a56aaa0f54a6f7626a6bd7751f3d3ba88ab0a7ba9b518fbe"
+    },
+    {
+      "path": "tools/check_gpu_compile.py",
+      "size_bytes": 2135,
+      "sha256": "5601e1d19de1a8439ba5c3e4f2147cbcd41e8a954366d32408212d2f0f6505ba"
+    },
+    {
+      "path": "tools/check_gpu_shaders.py",
+      "size_bytes": 3155,
+      "sha256": "50e3b830dc8cd19e6ada4e06589dd711453687b66ac9a16d89cdf261b4b9c41e"
+    },
+    {
+      "path": "tools/check_i3_interfaces.py",
+      "size_bytes": 4121,
+      "sha256": "286564c811c0683362a8c7aa6c90b62db4fd6b7cbbaf12a80f152453a1d6bc5c"
+    },
+    {
+      "path": "tools/prepare_shaderpack.py",
+      "size_bytes": 6303,
+      "sha256": "ad6bd2dc911669ce93a980e3265f1668b2ab5c44b993e4fce5770bb01ba93e90"
     }
   ]
 }

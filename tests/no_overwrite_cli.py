@@ -55,6 +55,10 @@ new=out/"case-new.out"; casepath=out/"CASE-NEW.OUT"
 if os.name == "nt":
     run("case_insensitive_alias",["interpolate","--run-spec",save_spec("case-alias",dict(base,output=str(new))),"--report",casepath],4)
     assert not new.exists() and not casepath.exists()
+report=out/"raw-collision-report.json"; rawlink=out/"raw-hardlink.bin";os.link(existing,rawlink)
+bench=dict(base,warmup_seconds=30,run_seconds=120,raw_events=str(rawlink))
+run("existing_raw_hardlink",["benchmark","--run-spec",save_spec("bench-hardlink",bench),"--report",report],9)
+assert existing.read_bytes()==b"KEEP EXISTING\n" and json.loads(report.read_text())["result"]=="FAIL"
 specfile=save_spec("protected-spec",dict(base,output=str(out/"never-output.ppm")))
 before=specfile.read_bytes(); run("report_equals_spec",["interpolate","--run-spec",specfile,"--report",specfile],9); assert specfile.read_bytes()==before
 same_spec=out/"self-output.json";same_spec.write_text(json.dumps(dict(base,output=str(same_spec))),encoding="utf-8")
@@ -62,6 +66,13 @@ before=same_spec.read_bytes();run("output_equals_spec",["interpolate","--run-spe
 missing_input=out/"missing-input.ppm"
 run("report_equals_missing_input",["interpolate","--run-spec",save_spec("missing-input-spec",dict(base,left=str(missing_input),output=str(out/"unused.ppm"))),"--report",missing_input],4)
 assert not missing_input.exists()
+new_raw=out/"new-shared-events.jsonl"
+run("report_equals_new_raw",["benchmark","--run-spec",save_spec("new-raw-spec",dict(base,warmup_seconds=30,run_seconds=120,raw_events=str(new_raw))),"--report",new_raw],4)
+assert not new_raw.exists()
+shaderdir=out/"shader-output"
+run("report_inside_shader_output",["export-shader-requests","--run-spec",save_spec("shader-spec",dict(base,shader_request_output_directory=str(shaderdir))),"--report",shaderdir/"catalog.json"],4)
+assert not shaderdir.exists()
+
 try:
     symbolic=out/"dangling-symlink";symbolic.symlink_to(out/"missing-target")
 except OSError as error:

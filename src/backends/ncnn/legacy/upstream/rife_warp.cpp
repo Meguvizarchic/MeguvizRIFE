@@ -65,11 +65,12 @@ int Warp::create_pipeline(const ncnn::Option& options) {
     const Source sources[] = {{warp_comp_data, sizeof(warp_comp_data)-1},
         {warp_pack4_comp_data, sizeof(warp_pack4_comp_data)-1}};
     for (int i = 0; i < 2; ++i) {
-        std::vector<std::uint32_t> spirv;
-        if (ncnn::compile_spirv_module(sources[i].data, sources[i].size, options, spirv) != 0 || spirv.empty()) return -1;
         auto pipeline = std::unique_ptr<ncnn::Pipeline>(new (std::nothrow) ncnn::Pipeline(vkdev));
         if (!pipeline) return -100;
         pipeline->set_optimal_local_size_xyz();
+        std::vector<std::uint32_t> spirv;
+        if (ncnn::compile_spirv_module_with_local_size(sources[i].data, sources[i].size, options,
+            pipeline->local_size_x(), pipeline->local_size_y(), pipeline->local_size_z(), spirv) != 0 || spirv.empty()) return -1;
         if (pipeline->create(spirv.data(), spirv.size() * sizeof(std::uint32_t), {}) != 0) return -1;
         pipelines_[i] = std::move(pipeline);
     }

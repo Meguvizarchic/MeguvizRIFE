@@ -1,0 +1,26 @@
+#version 450
+layout(binding=0) readonly buffer inferred_blob { uint inferred_data[]; };
+layout(binding=1) readonly buffer nearest_blob { uint nearest_data[]; };
+layout(binding=2) readonly buffer patch_blob { uint patch_data[]; };
+layout(binding=3) buffer target_blob { uint target_data[]; };
+layout(push_constant) uniform parameter { int width; int height; int stride; int channels; int offset; int words; int endpoint; } p;
+void main() {
+    int word=int(gl_GlobalInvocationID.x); if(word>=p.words) return;
+    uint value=0u;
+    for(int k=0;k<4;k++) {
+        int index=word*4+k; if(index>=p.stride*p.height) break;
+        int y=index/p.stride,x=(index-y*p.stride)/p.channels,c=index%p.stride%p.channels;
+        uint v=0u;
+        if(x<p.width) {
+            if(c==3) v=255u;
+            else {
+                int i=(y*p.width+x)*3+c,tile=(y*9/p.height)*16+x*16/p.width;
+                uint source=(p.endpoint!=0||patch_data[tile]!=0u)?nearest_data[i>>2]:inferred_data[i>>2];
+                v=(source>>uint((i&3)*8))&255u;
+            }
+        }
+        value|=v<<uint(k*8);
+    }
+    // Compute GPU buffer leases are word-aligned; offsets are checked by the caller.
+    target_data[p.offset/4+word]=value;
+}

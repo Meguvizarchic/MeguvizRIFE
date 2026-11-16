@@ -1,2 +1,3 @@
 #pragma once
+#cmakedefine01 MGR_SHARED_PLAN_ENABLED
 namespace meguviz::rife { inline constexpr const char* build_fingerprint = "@MGR_BUILD_FP@"; }

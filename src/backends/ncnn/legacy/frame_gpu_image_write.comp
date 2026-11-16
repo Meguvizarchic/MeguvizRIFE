@@ -1,0 +1,18 @@
+#version 450
+layout(binding=0) readonly buffer inferred_blob { uint inferred_data[]; };
+layout(binding=1) readonly buffer nearest_blob { uint nearest_data[]; };
+layout(binding=2) readonly buffer patch_blob { uint patch_data[]; };
+layout(rgba8,binding=3) uniform writeonly image2D target_image;
+layout(push_constant) uniform parameter { int width; int height; int endpoint; } p;
+void main() {
+    int x=int(gl_GlobalInvocationID.x),y=int(gl_GlobalInvocationID.y);
+    if(x>=p.width||y>=p.height) return;
+    bool useNearest=p.endpoint!=0||patch_data[(y*9/p.height)*16+x*16/p.width]!=0u;
+    vec3 rgb;
+    for(int c=0;c<3;c++) {
+        int i=(y*p.width+x)*3+c;
+        uint source=useNearest?nearest_data[i>>2]:inferred_data[i>>2];
+        rgb[c]=float((source>>uint((i&3)*8))&255u)/255.f;
+    }
+    imageStore(target_image,ivec2(x,y),vec4(rgb,1.f));
+}

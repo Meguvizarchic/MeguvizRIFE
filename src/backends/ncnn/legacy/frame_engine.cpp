@@ -1,12 +1,26 @@
 #include "frame_engine.h"
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+#define MGR_OBSERVE_JOB(...) __VA_ARGS__
+#else
+#define MGR_OBSERVE_JOB(...)
+#endif
 
 #include "upstream/rife_warp.h"
+#include "add_leaky.h"
+#include "private/data.hpp"
+#include "private/alpha.hpp"
+#include <meguviz/backend_ncnn_sdk.hpp>
 #if NCNN_VULKAN
 #include "frame_preproc.comp.hex.h"
 #include "frame_postproc.comp.hex.h"
 #include "frame_fused.comp.hex.h"
 #include "frame_fused_rgb8.comp.hex.h"
 #include "frame_reduce.comp.hex.h"
+#include "frame_gpu_unpack.comp.hex.h"
+#include "frame_gpu_image_read.comp.hex.h"
+#include "frame_gpu_statistics.comp.hex.h"
+#include "frame_gpu_patch.comp.hex.h"
+#include "frame_gpu_image_write.comp.hex.h"
 #include <pipeline.h>
 #endif
 #include <command.h>
@@ -29,6 +43,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <map>
+#include <set>
+#include <functional>
 
 namespace meguviz::rife::legacy {
 namespace {
@@ -72,16 +89,82 @@ bool layoutValid(const void* data, int width, int height, std::size_t stride,
     return (h - 1) * stride + rowBytes <= capacity;
 }
 
-bool modelShapeValid(const ncnn::Net& net) {
+bool modelShapeValid(const ncnn::Net& net, bool reducedOnly = false) {
     const auto& inputs = net.input_names();
     const auto& outputs = net.output_names();
-    if (inputs.size() != 3 || outputs.size() != 1 || std::strcmp(outputs[0], "out0") != 0) return false;
+    if (inputs.size() != 3) return false;
+    if (!reducedOnly && (outputs.size() != 1 || std::strcmp(outputs[0], "out0") != 0)) return false;
+    if (reducedOnly) {
+        bool flow=false,mask=false;
+        for(const auto* name:outputs) {flow|=std::strcmp(name,"327")==0;mask|=std::strcmp(name,"332")==0;}
+        if(!flow||!mask) return false;
+    }
     for (const char* required : {"in0", "in1", "in2"}) {
         bool found = false;
         for (const char* input : inputs) found = found || std::strcmp(required, input) == 0;
         if (!found) return false;
     }
     return true;
+}
+
+// The approved v4.6 graph is hash checked by the public model loader. Only
+// weightless descendants are removed, so the original weight stream is exact.
+std::string pruneTail(const std::string& param) {
+    struct Node {std::string text,type;std::vector<std::string> inputs,outputs;};
+    std::istringstream source(param);int magic=0,layers=0,blobs=0;source>>magic>>layers>>blobs;
+    std::string line;std::getline(source,line);std::vector<Node> nodes;std::map<std::string,size_t> producers;
+    while(std::getline(source,line)) {
+        if(line.empty())continue;std::istringstream row(line);Node node;node.text=line;std::string name;int in=0,out=0;
+        if(!(row>>node.type>>name>>in>>out)||in<0||out<0||in>32||out>32)throw std::runtime_error("graph_shape");
+        std::string blob;
+        for(int i=0;i<in;i++){if(!(row>>blob))throw std::runtime_error("graph_input");node.inputs.push_back(blob);}
+        for(int i=0;i<out;i++){if(!(row>>blob)||!producers.emplace(blob,nodes.size()).second)throw std::runtime_error("graph_output");node.outputs.push_back(blob);}
+        nodes.push_back(std::move(node));
+    }
+    if(int(nodes.size())!=layers)throw std::runtime_error("graph_layers");
+    std::set<size_t> keep;std::function<void(const std::string&)> visit=[&](const std::string& blob) {
+        const auto found=producers.find(blob);if(found==producers.end())throw std::runtime_error("graph_dependency");
+        if(!keep.insert(found->second).second)return;for(const auto& input:nodes[found->second].inputs)visit(input);
+    };
+    visit("327");visit("332");std::set<std::string> outputBlobs;
+    std::string body;
+    for(size_t i=0;i<nodes.size();i++) {
+        if(keep.count(i)){body+=nodes[i].text+"\n";outputBlobs.insert(nodes[i].outputs.begin(),nodes[i].outputs.end());}
+        else if(nodes[i].type!="Split"&&nodes[i].type!="BinaryOp"&&nodes[i].type!="Crop"&&nodes[i].type!="rife.Warp")throw std::runtime_error("weighted_tail");
+    }
+    return "7767517\n"+std::to_string(keep.size())+" "+std::to_string(outputBlobs.size())+"\n"+body;
+}
+
+std::string fuseAddLeaky(const std::string& param) {
+    struct Node {std::string type,name,text;std::vector<std::string> inputs,outputs,params;};
+    std::istringstream source(param);int magic=0,layers=0,blobs=0;source>>magic>>layers>>blobs;
+    std::string line;std::getline(source,line);std::vector<Node> nodes;std::map<std::string,int> consumers;
+    while(std::getline(source,line)) {
+        if(line.empty())continue;std::istringstream row(line);Node n;n.text=line;int in=0,out=0;
+        if(!(row>>n.type>>n.name>>in>>out)||in<0||out<0||in>32||out>32)throw std::runtime_error("fusion_graph");
+        std::string token;for(int i=0;i<in;i++){if(!(row>>token))throw std::runtime_error("fusion_input");n.inputs.push_back(token);consumers[token]++;}
+        for(int i=0;i<out;i++){if(!(row>>token))throw std::runtime_error("fusion_output");n.outputs.push_back(token);}
+        while(row>>token)n.params.push_back(token);nodes.push_back(std::move(n));
+    }
+    if(int(nodes.size())!=layers)throw std::runtime_error("fusion_layers");
+    std::string body;std::set<std::string> outputs;int kept=0;
+    for(size_t i=0;i<nodes.size();i++) {
+        auto& a=nodes[i];bool fused=false;
+        if(i+1<nodes.size()&&a.type=="BinaryOp"&&a.inputs.size()==2&&a.outputs.size()==1&&
+            consumers[a.outputs[0]]==1&&(a.params.empty()||(a.params.size()==1&&a.params[0]=="0=0"))) {
+            auto& b=nodes[i+1];
+            if(b.type=="ReLU"&&b.inputs.size()==1&&b.outputs.size()==1&&b.inputs[0]==a.outputs[0]&&
+                b.params.size()==1&&b.params[0].rfind("0=",0)==0) {
+                const float slope=std::stof(b.params[0].substr(2));
+                if(std::isfinite(slope)&&slope>0.f) {
+                    body+="rife.AddLeaky "+b.name+" 2 1 "+a.inputs[0]+" "+a.inputs[1]+" "+b.outputs[0]+" "+b.params[0]+"\n";
+                    outputs.insert(b.outputs[0]);kept++;i++;fused=true;
+                }
+            }
+        }
+        if(!fused){body+=a.text+"\n";outputs.insert(a.outputs.begin(),a.outputs.end());kept++;}
+    }
+    return "7767517\n"+std::to_string(kept)+" "+std::to_string(outputs.size())+"\n"+body;
 }
 
 Status gpuReady(const ncnn::VulkanDevice* device) {
@@ -203,15 +286,34 @@ std::int64_t nowNs() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+mgr_detail::J graphOptions(const ncnn::Option& o) {
+    return mgr_detail::Parser(meguviz_options_detail::execution_options_json(o)).parse();
+}
+mgr_detail::J executionGraphOptions(const ncnn::Option& o) {
+    return graphOptions(o);
+}
 } // namespace
 
 class Engine::Impl {
 public:
-    explicit Impl(Options value) : options(value) {}
-    ~Impl() { releaseNets(); releaseAllocators(); }
+    explicit Impl(Options value) : options(value) { mgc_shaderpack_retain(options.shaderpack); }
+    ~Impl() {
+        // Vulkan instances reach this destructor only after closeOwned() has
+        // destroyed their GPU state under the actual Compute owner scope.
+        releaseNets(); releaseAllocators();
+        mgc_shaderpack_release(options.shaderpack);
+    }
     Options options;
     std::mutex mutex;
+    // Protects the owner handle across scope return and release. Every entry
+    // uses try_lock, so a device-scope caller never waits on an inverse edge.
+    std::mutex lifecycleMutex;
+    // A continuation owns this token until all of its command-dependent
+    // objects have been retired and released. No mutex remains locked while
+    // the accepted job is waiting for Compute to resume it.
+    const void* activeInference = nullptr;
     std::atomic<bool> loaded{false};
+    bool closed = false;
     bool fp16 = false;
     int flowScale = 1;
     bool gpuIo = false;
@@ -220,7 +322,12 @@ public:
     bool rawGpuInput = false;
     bool adaptiveFlow = false;
     // 运动置信度保护（融合路径）：逐像素回退到未 warp 的时间加权混合，并统计不可靠像素比例。
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+    std::atomic<bool> motionGuard{true};
+    JobObservation diagnosticLast{};
+#else
     bool motionGuard = true;
+#endif
     std::atomic<int> unreliablePermille{0};
     std::atomic<int> patchedTiles{0};
     std::atomic<int> histogramPermille{0};
@@ -231,8 +338,128 @@ public:
     std::array<std::unique_ptr<ncnn::Net>, 9> extraDown;
     std::array<std::unique_ptr<ncnn::Net>, 9> extraUp;
     std::vector<std::uint8_t> staging;
+    std::string graphText;
+    std::string catalogText;
+    std::string executionText;
+    uint32_t shaderCounters[3]{};
+    ncnn::Option requestedNetworkOptions;
     std::atomic<std::int64_t> timings[3] = {};
 #if NCNN_VULKAN
+    static constexpr std::uint64_t UploadWaitLimitNs = 100000000;
+    meguviz::NcnnDomainOwner* uploadOwner = nullptr;
+    std::atomic<bool> uploadsPending{false};
+    std::array<std::unique_ptr<ncnn::VkTransfer>,7> uploads;
+    std::array<std::string,7> uploadParams;
+    std::vector<std::uint8_t> uploadWeights;
+    struct RetirementSlot { Impl* impl=nullptr; bool abandoned=false,polling=false; std::shared_ptr<Impl> orphan; };
+    struct RetirementRegistry { std::mutex mutex; std::array<RetirementSlot,16> slots; };
+    static RetirementRegistry& registry() { static auto* value=new RetirementRegistry; return *value; }
+    std::size_t retirementSlot = 16;
+
+    MgcStatus initializeOwner() {
+        if(options.backend!=Backend::Vulkan)return MGC_SUCCESS;
+        if(!options.computeDomain)return MGC_INVALID_ARGUMENT;
+        auto& r=registry();
+        {
+            std::lock_guard<std::mutex> lock(r.mutex);
+            for(std::size_t i=0;i<r.slots.size();++i)if(!r.slots[i].impl) {
+                r.slots[i].impl=this;retirementSlot=i;break;
+            }
+        }
+        if(retirementSlot==r.slots.size())return MGC_BACKPRESSURE;
+        auto status=meguviz::ncnn_domain_owner_create(options.computeDomain,&uploadOwner);
+        if(status!=MGC_SUCCESS){unregisterOwner();return status;}
+        // Reject a borrowed device that does not belong to the retained domain.
+        // The validation scope records no work and explicitly clears its mark.
+        status=meguviz::with_ncnn_domain_owner(uploadOwner,[](void* p,const ncnn::VulkanDevice* device) -> MgcStatus {
+            auto* self=static_cast<Impl*>(p);
+            const auto cleared=meguviz::ncnn_domain_owner_pending(self->uploadOwner,false);
+            return cleared!=MGC_SUCCESS?cleared:device==self->options.domainDevice?MGC_SUCCESS:MGC_INCOMPATIBLE_DOMAIN;
+        },this);
+        return status;
+    }
+    void unregisterOwner() noexcept {
+        if(retirementSlot==16)return;
+        auto& r=registry();std::lock_guard<std::mutex> lock(r.mutex);
+        if(r.slots[retirementSlot].impl==this)r.slots[retirementSlot]=RetirementSlot{};
+        retirementSlot=16;
+    }
+    bool refreshPending() noexcept {
+        bool pending=false;
+        for(const auto& transfer:uploads)pending|=transfer&&!transfer->transfer_batches_retired();
+        uploadsPending.store(pending);
+        return pending;
+    }
+    bool observeUploadLoss() noexcept {
+        for(const auto& transfer:uploads)if(transfer&&
+            (transfer->last_submit_result()==VK_ERROR_DEVICE_LOST||transfer->last_wait_result()==VK_ERROR_DEVICE_LOST))
+            meguviz::ncnn_report_device_lost(options.computeDomain);
+        const bool lost=meguviz::ncnn_domain_is_lost(options.computeDomain);
+        if(lost)loaded.store(false);
+        return lost;
+    }
+    MgcStatus retireUploads(std::uint64_t waitNs) noexcept {
+        if(observeUploadLoss()) {
+            if(!meguviz::ncnn_domain_loss_retired(options.computeDomain))return MGC_BUSY;
+            for(auto& transfer:uploads)if(transfer)transfer->retire_device_lost();
+            uploadsPending.store(false);
+            return MGC_DEVICE_LOST;
+        }
+        for(auto& transfer:uploads)
+            if(transfer&&!transfer->transfer_batches_retired())transfer->wait_transfer_retirement(waitNs);
+        if(observeUploadLoss()) {
+            if(!meguviz::ncnn_domain_loss_retired(options.computeDomain))return MGC_BUSY;
+            for(auto& transfer:uploads)if(transfer)transfer->retire_device_lost();
+            uploadsPending.store(false);
+            return MGC_DEVICE_LOST;
+        }
+        return refreshPending()?MGC_BUSY:MGC_SUCCESS;
+    }
+    int loadNetwork(ncnn::Net& net,const ncnn::DataReader& reader,std::size_t slot) {
+        if(options.backend!=Backend::Vulkan)return net.load_model(reader);
+        if(meguviz::ncnn_domain_is_lost(options.computeDomain))return -1;
+        // The Impl and its fixed registry slot already own Net/model/allocator.
+        // Install the command owner before load_model can perform its first batch.
+        uploads[slot]=std::make_unique<ncnn::VkTransfer>(options.domainDevice);
+        if(!uploads[slot]->is_valid())return -1;
+        return net.load_model_with_transfer(reader,uploads[slot].get(),UploadWaitLimitNs);
+    }
+    MgcStatus closeOwned(std::uint64_t waitNs) noexcept {
+        if(activeInference)return MGC_BUSY;
+        const auto retirement=retireUploads(waitNs);
+        if(retirement!=MGC_SUCCESS&&retirement!=MGC_DEVICE_LOST)return retirement;
+        loaded.store(false);closed=true;
+        releaseNets();releaseAllocators();
+        mgc_shaderpack_release(options.shaderpack);options.shaderpack=nullptr;
+        return meguviz::ncnn_domain_owner_pending(uploadOwner,false);
+    }
+    MgcStatus closeWithOwner(std::uint64_t waitNs) noexcept {
+        if(!uploadOwner)return MGC_SUCCESS;
+        if(observeUploadLoss()) {
+            mgc_domain_service(options.computeDomain,0);
+            if(!meguviz::ncnn_domain_loss_retired(options.computeDomain))return MGC_BUSY;
+        }
+        struct Call { Impl* self;std::uint64_t wait; } call{this,waitNs};
+        const auto enter=meguviz::ncnn_domain_is_lost(options.computeDomain)?
+            meguviz::try_with_ncnn_domain_owner_retire:meguviz::try_with_ncnn_domain_owner;
+        const auto status=enter(uploadOwner,[](void* p,const ncnn::VulkanDevice*) -> MgcStatus {
+            auto& call=*static_cast<Call*>(p);
+            std::unique_lock<std::mutex> lock(call.self->mutex,std::try_to_lock);
+            if(!lock.owns_lock())return MGC_BUSY;
+            return call.self->closeOwned(call.wait);
+        },&call);
+        if(status!=MGC_SUCCESS)return status;
+        const auto released=meguviz::ncnn_domain_owner_release(uploadOwner);
+        if(released==MGC_SUCCESS){uploadOwner=nullptr;unregisterOwner();}
+        return released;
+    }
+    static void abandon(std::shared_ptr<Impl>& impl) noexcept {
+        auto& r=registry();std::lock_guard<std::mutex> lock(r.mutex);
+        auto* raw=impl.get();
+        if(raw->retirementSlot<r.slots.size()&&r.slots[raw->retirementSlot].impl==raw) {
+            r.slots[raw->retirementSlot].abandoned=true;r.slots[raw->retirementSlot].orphan=std::move(impl);
+        }
+    }
     // 常驻显存池：避免每次推理重新申请/释放 VkBuffer；网络必须先于池释放。
     const ncnn::VulkanDevice* device = nullptr;
     ncnn::VkAllocator* blobAllocator = nullptr;
@@ -253,20 +480,40 @@ public:
     int nextFrame = 0;
     void clearFrames() { for (auto& frame : frames) frame = GpuFrame{}; nextFrame = 0; }
     // RGB8 <-> 平面浮点的 GPU 转换管线；与网络同一 Option 编译，fp16 存储保持一致。
-    std::unique_ptr<ncnn::Pipeline> preproc;
-    std::unique_ptr<ncnn::Pipeline> postproc;
-    std::unique_ptr<ncnn::Pipeline> fused;
-    std::unique_ptr<ncnn::Pipeline> reduce;
+    struct PipelineSlot {
+        std::unique_ptr<ncnn::Pipeline> owned;
+        ncnn::Pipeline* borrowed=nullptr;
+        ncnn::Pipeline* get() const {return borrowed?borrowed:owned.get();}
+        void reset(){owned.reset();borrowed=nullptr;}
+        PipelineSlot& operator=(std::unique_ptr<ncnn::Pipeline> p){owned=std::move(p);borrowed=nullptr;return *this;}
+    };
+    PipelineSlot preproc,postproc,fused,reduce,gpuUnpack,gpuImageRead,gpuStatistics,gpuPatch,gpuImageWrite;
+    mgr_detail::J::A shaderRecords;
+    MgcStatus makePipeline(uint32_t kernel,const char* logical,const char* source,int size,const ncnn::Option& effective,
+                           int x,int y,int z,const std::vector<int>& bindings,int pushCount,PipelineSlot& slot);
+    struct GpuLeaseFrame { int64_t id = -1; int width=0,height=0,scale=0; ncnn::VkMat raw,full,reduced; };
+    GpuLeaseFrame leaseFrames[3];
+    int nextLeaseFrame = 0;
 #endif
 
     void releaseNets() noexcept {
+        catalogText.clear();executionText.clear();for(auto& count:shaderCounters)count=0;
 #if NCNN_VULKAN
+        for(auto& transfer:uploads)transfer.reset();
+        shaderRecords.clear();
         clearFrames();
+        for (auto& frame : leaseFrames) frame = GpuLeaseFrame{};
+        gpuUnpack.reset(); gpuImageRead.reset(); gpuStatistics.reset(); gpuPatch.reset(); gpuImageWrite.reset();
         reduce.reset(); fused.reset(); postproc.reset(); preproc.reset();
 #endif
         for (auto& net : extraUp) net.reset();
         for (auto& net : extraDown) net.reset();
         upscale.reset(); downscale.reset(); network.reset();
+#if NCNN_VULKAN
+        // Model bytes outlive all Nets, including their destruction paths.
+        for(auto& param:uploadParams)param.clear();
+        uploadWeights.clear();
+#endif
     }
     void releaseAllocators() noexcept {
 #if NCNN_VULKAN
@@ -294,6 +541,9 @@ public:
 #endif
     }
 };
+#if NCNN_VULKAN
+#include "shader_pipeline.inc"
+#endif
 
 const char* Status::name() const noexcept {
     switch (code) {
@@ -309,12 +559,111 @@ const char* Status::name() const noexcept {
         case Code::AllocationFailed: return "allocation_failed";
         case Code::InferenceFailed: return "inference_failed";
         case Code::InvalidOutput: return "invalid_output";
+        case Code::ArtifactMismatch: return "artifact_mismatch";
+        case Code::IncompatibleDomain: return "incompatible_domain";
+        case Code::DeviceLost: return "device_lost";
     }
     return "unknown";
 }
 
-Engine::Engine(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
-Engine::~Engine() = default;
+Engine::Engine(std::shared_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+Engine::~Engine() {
+#if NCNN_VULKAN
+    if(impl_&&impl_->uploadOwner&& !close().ok())Impl::abandon(impl_);
+#endif
+}
+
+Status Engine::pollUploads(std::uint64_t waitNs) noexcept {
+    std::unique_lock<std::mutex> lifetime(impl_->lifecycleMutex,std::try_to_lock);
+    if(!lifetime.owns_lock())return {Code::Busy};
+#if NCNN_VULKAN
+    if(waitNs>Impl::UploadWaitLimitNs)return {Code::InvalidArgument};
+    if(impl_->uploadOwner) {
+        const bool lost=impl_->observeUploadLoss();
+        if(lost){mgc_domain_service(impl_->options.computeDomain,0);if(!meguviz::ncnn_domain_loss_retired(impl_->options.computeDomain))return {Code::Busy};}
+        struct Call { Impl* impl;std::uint64_t wait; } call{impl_.get(),waitNs};
+        const auto enter=lost?meguviz::try_with_ncnn_domain_owner_retire:
+            waitNs?meguviz::with_ncnn_domain_owner:meguviz::try_with_ncnn_domain_owner;
+        const auto status=enter(impl_->uploadOwner,[](void* p,const ncnn::VulkanDevice*) -> MgcStatus {
+            auto& c=*static_cast<Call*>(p);
+            std::unique_lock<std::mutex> lock(c.impl->mutex,std::try_to_lock);
+            if(!lock.owns_lock())return MGC_BUSY;
+            const auto retirement=c.impl->retireUploads(c.wait);
+            if(retirement!=MGC_SUCCESS&&retirement!=MGC_DEVICE_LOST)return retirement;
+            return meguviz::ncnn_domain_owner_pending(c.impl->uploadOwner,false);
+        },&call);
+        return status==MGC_SUCCESS?Status{impl_->observeUploadLoss()?Code::DeviceLost:Code::Ok}:
+            Status{status==MGC_DEVICE_LOST?Code::DeviceLost:Code::Busy};
+    }
+#else
+    (void)waitNs;
+#endif
+    return {};
+}
+
+Status Engine::close() noexcept {
+    std::unique_lock<std::mutex> lifetime(impl_->lifecycleMutex,std::try_to_lock);
+    if(!lifetime.owns_lock())return {Code::Busy};
+    std::unique_lock<std::mutex> lock(impl_->mutex,std::try_to_lock);
+    if(!lock.owns_lock())return {Code::Busy};
+#if NCNN_VULKAN
+    // closeWithOwner uses the same device serialization as load, but must not
+    // acquire it after the Engine mutex: load owns device then Engine. Let the
+    // owner callback acquire Engine instead. The caller keeps this Engine live.
+    if(impl_->uploadOwner) {
+        lock.unlock();
+        if(impl_->observeUploadLoss()){mgc_domain_service(impl_->options.computeDomain,0);if(!meguviz::ncnn_domain_loss_retired(impl_->options.computeDomain))return {Code::Busy};}
+        struct Call { Impl* impl; } call{impl_.get()};
+        const auto enter=meguviz::ncnn_domain_is_lost(impl_->options.computeDomain)?
+            meguviz::try_with_ncnn_domain_owner_retire:meguviz::try_with_ncnn_domain_owner;
+        const auto status=enter(impl_->uploadOwner,[](void* p,const ncnn::VulkanDevice*) -> MgcStatus {
+            auto* impl=static_cast<Call*>(p)->impl;
+            std::unique_lock<std::mutex> guard(impl->mutex,std::try_to_lock);
+            if(!guard.owns_lock())return MGC_BUSY;
+            return impl->closeOwned(0);
+        },&call);
+        if(status!=MGC_SUCCESS)return {Code::Busy};
+        const auto released=meguviz::ncnn_domain_owner_release(impl_->uploadOwner);
+        if(released!=MGC_SUCCESS)return {Code::Busy};
+        impl_->uploadOwner=nullptr;impl_->unregisterOwner();
+        return {};
+    }
+#endif
+    impl_->loaded.store(false);impl_->closed=true;impl_->releaseNets();impl_->releaseAllocators();
+    mgc_shaderpack_release(impl_->options.shaderpack);impl_->options.shaderpack=nullptr;
+    return {};
+}
+
+Status Engine::pollRetiredUploads(std::uint64_t waitNs, MgcDomain* domain) noexcept {
+#if NCNN_VULKAN
+    if(waitNs>Impl::UploadWaitLimitNs)return {Code::InvalidArgument};
+    bool waiting=false;
+    auto& registry=Impl::registry();
+    for(std::size_t i=0;i<registry.slots.size();++i) {
+        std::shared_ptr<Impl> impl;
+        {
+            std::lock_guard<std::mutex> lock(registry.mutex);
+            auto& slot=registry.slots[i];
+            if(slot.impl&&slot.abandoned&&(!domain||slot.impl->options.computeDomain==domain)) {
+                if(slot.polling){waiting=true;continue;}
+                slot.polling=true;impl=slot.orphan;
+            }
+        }
+        if(!impl)continue;
+        // Only this claimant may touch/free this abandoned implementation.
+        // It has no live Engine caller and all access uses the device owner.
+        const auto status=impl->closeWithOwner(waitNs);
+        if(status!=MGC_SUCCESS) {
+            waiting=true;
+            std::lock_guard<std::mutex> lock(registry.mutex);
+            if(registry.slots[i].impl==impl.get())registry.slots[i].polling=false;
+        }
+    }
+    return waiting?Status{Code::Busy}:Status{};
+#else
+    (void)waitNs;(void)domain;return {};
+#endif
+}
 
 std::unique_ptr<Engine> Engine::create(const Options& options, Status* status) noexcept {
     const auto fail = [status](Code code) -> std::unique_ptr<Engine> {
@@ -326,10 +675,18 @@ std::unique_ptr<Engine> Engine::create(const Options& options, Status* status) n
             return fail(Code::InvalidArgument);
         if (options.backend != Backend::Cpu && options.backend != Backend::Vulkan) return fail(Code::UnsupportedBackend);
         if (options.backend == Backend::Vulkan) {
+#if NCNN_VULKAN
+            if(meguviz::ncnn_domain_is_lost(options.computeDomain))return fail(Code::DeviceLost);
+#endif
             const Status gpu = gpuReady(options.domainDevice);
             if (!gpu.ok()) return fail(gpu.code);
         }
-        auto engine = std::unique_ptr<Engine>(new Engine(std::make_unique<Impl>(options)));
+        auto engine = std::unique_ptr<Engine>(new Engine(std::make_shared<Impl>(options)));
+#if NCNN_VULKAN
+        const auto ownership=engine->impl_->initializeOwner();
+        if(ownership!=MGC_SUCCESS)return fail(ownership==MGC_OUT_OF_MEMORY?Code::AllocationFailed:
+            ownership==MGC_DEVICE_LOST?Code::DeviceLost:ownership==MGC_BACKPRESSURE||ownership==MGC_BUSY?Code::Busy:Code::IncompatibleDomain);
+#endif
         if (status != nullptr) *status = {};
         return engine;
     } catch (const std::bad_alloc&) { return fail(Code::AllocationFailed); }
@@ -338,9 +695,35 @@ std::unique_ptr<Engine> Engine::create(const Options& options, Status* status) n
 
 Status Engine::configure(bool fp16, int flowScale, bool gpuIo, bool protectStaticDetails, bool fusedWarp, bool rawGpuInput,
                          bool adaptiveFlow) noexcept {
+    std::unique_lock<std::mutex> lifetime(impl_->lifecycleMutex,std::try_to_lock);
+    if(!lifetime.owns_lock())return {Code::Busy};
+#if NCNN_VULKAN
+    if(impl_->options.backend==Backend::Vulkan) {
+        if(meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return {Code::DeviceLost};
+        if(!impl_->uploadOwner||impl_->closed||impl_->uploadsPending.load())return {Code::Busy};
+        struct Call { Engine* self;bool fp16;int scale;bool gpu,detail,fused,raw,adaptive;Status result; }
+            call{this,fp16,flowScale,gpuIo,protectStaticDetails,fusedWarp,rawGpuInput,adaptiveFlow,{Code::Busy}};
+        const auto status=meguviz::with_ncnn_domain_owner(impl_->uploadOwner,[](void* p,const ncnn::VulkanDevice*) -> MgcStatus {
+            auto& c=*static_cast<Call*>(p);
+            c.result=c.self->configureOwned(c.fp16,c.scale,c.gpu,c.detail,c.fused,c.raw,c.adaptive);
+            if(!c.self->impl_->refreshPending())return meguviz::ncnn_domain_owner_pending(c.self->impl_->uploadOwner,false);
+            return MGC_BUSY;
+        },&call);
+        return status==MGC_SUCCESS?call.result:Status{status==MGC_DEVICE_LOST?Code::DeviceLost:status==MGC_OUT_OF_MEMORY?Code::AllocationFailed:Code::Busy};
+    }
+#endif
+    return configureOwned(fp16,flowScale,gpuIo,protectStaticDetails,fusedWarp,rawGpuInput,adaptiveFlow);
+}
+
+Status Engine::configureOwned(bool fp16, int flowScale, bool gpuIo, bool protectStaticDetails, bool fusedWarp, bool rawGpuInput,
+                              bool adaptiveFlow) noexcept {
     std::unique_lock<std::mutex> guard(impl_->mutex, std::try_to_lock);
-    if (!guard.owns_lock()) return {Code::Busy};
-    if (flowScale != 1 && flowScale != 2 && flowScale != 4 && flowScale != 8) return {Code::InvalidArgument};
+    if (!guard.owns_lock() || impl_->activeInference) return {Code::Busy};
+#if NCNN_VULKAN
+    if(impl_->options.backend==Backend::Vulkan&&meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return {Code::DeviceLost};
+#endif
+    if(impl_->closed)return {Code::Busy};
+    if (flowScale != 1 && flowScale != 2 && flowScale != 4 && flowScale != 6 && flowScale != 8) return {Code::InvalidArgument};
     if (protectStaticDetails && !gpuIo) return {Code::InvalidArgument};
     if (fusedWarp && (!gpuIo || flowScale == 1)) return {Code::InvalidArgument};
     if (rawGpuInput && !fusedWarp) return {Code::InvalidArgument};
@@ -372,9 +755,33 @@ void Engine::timings(std::int64_t out[3]) const noexcept {
 }
 
 Status Engine::load(ModelView model) noexcept {
+    std::unique_lock<std::mutex> lifetime(impl_->lifecycleMutex,std::try_to_lock);
+    if(!lifetime.owns_lock())return {Code::Busy};
+#if NCNN_VULKAN
+    if(impl_->options.backend==Backend::Vulkan) {
+        if(meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return {Code::DeviceLost};
+        if(!impl_->uploadOwner||impl_->closed||impl_->uploadsPending.load())return {Code::Busy};
+        struct Call { Engine* self;ModelView model;Status result; } call{this,model,{Code::Busy}};
+        const auto status=meguviz::with_ncnn_domain_owner(impl_->uploadOwner,[](void* p,const ncnn::VulkanDevice*) -> MgcStatus {
+            auto& c=*static_cast<Call*>(p);c.result=c.self->loadOwned(c.model);
+            if(c.self->impl_->observeUploadLoss())return MGC_DEVICE_LOST;
+            if(!c.self->impl_->refreshPending())return meguviz::ncnn_domain_owner_pending(c.self->impl_->uploadOwner,false);
+            return MGC_BUSY;
+        },&call);
+        return status==MGC_SUCCESS?call.result:Status{status==MGC_DEVICE_LOST?Code::DeviceLost:status==MGC_OUT_OF_MEMORY?Code::AllocationFailed:Code::Busy};
+    }
+#endif
+    return loadOwned(model);
+}
+
+Status Engine::loadOwned(ModelView model) noexcept {
     try {
         std::unique_lock<std::mutex> guard(impl_->mutex, std::try_to_lock);
-        if (!guard.owns_lock()) return {Code::Busy};
+        if (!guard.owns_lock() || impl_->activeInference) return {Code::Busy};
+#if NCNN_VULKAN
+        if(impl_->options.backend==Backend::Vulkan&&meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return {Code::DeviceLost};
+#endif
+        if(impl_->closed)return {Code::Busy};
         impl_->loaded.store(false);
         impl_->releaseNets();
         if (model.param == nullptr || model.weights == nullptr || model.paramSize == 0 || model.weightsSize == 0)
@@ -382,11 +789,16 @@ Status Engine::load(ModelView model) noexcept {
         if (model.paramSize > MaxParamBytes || model.weightsSize > MaxWeightBytes) return {Code::ModelTooLarge};
         if (std::memchr(model.param, 0, model.paramSize) != nullptr) return {Code::InvalidModel};
         // load_param_mem needs a NUL terminator; the caller's buffer need not provide one.
-        const std::string param(reinterpret_cast<const char*>(model.param), model.paramSize);
+        std::string param(reinterpret_cast<const char*>(model.param), model.paramSize);
         int magic = 0, layers = 0, blobs = 0;
         std::istringstream header(param);
         if (!(header >> magic >> layers >> blobs) || magic != 7767517 || layers <= 0 || layers > 1024 || blobs <= 0 || blobs > 8192)
             return {Code::InvalidModel};
+        if(impl_->options.pruneUnusedTail) {
+            if(impl_->flowScale==1)return {Code::InvalidArgument};
+            param=pruneTail(param);
+        }
+        if(impl_->options.fuseAddLeaky)param=fuseAddLeaky(param);
 #if NCNN_VULKAN
         if (impl_->options.backend == Backend::Vulkan && impl_->blobAllocator == nullptr) {
             impl_->device = impl_->options.domainDevice;
@@ -396,14 +808,36 @@ Status Engine::load(ModelView model) noexcept {
             if (impl_->blobAllocator == nullptr || impl_->stagingAllocator == nullptr) return {Code::AllocationFailed};
         }
 #endif
-        auto network = std::make_unique<ncnn::Net>();
+        auto localNetwork = std::make_unique<ncnn::Net>();
+        auto* network=localNetwork.get();
+#if NCNN_VULKAN
+        if(impl_->options.backend==Backend::Vulkan) {
+            impl_->uploadParams[0]=param;
+            impl_->uploadWeights.assign(model.weights,model.weights+model.weightsSize);
+            impl_->network=std::move(localNetwork);
+        }
+#endif
         impl_->configureNet(*network);
+        impl_->requestedNetworkOptions=network->opt;
         if (network->register_custom_layer("rife.Warp", detail::createWarp) != 0 ||
-            network->load_param_mem(param.c_str()) != 0 || !modelShapeValid(*network)) return {Code::InvalidModel};
-        BoundedReader weights(model.weights, model.weightsSize);
+            network->register_custom_layer("rife.AddLeaky", detail::createAddLeaky) != 0 ||
+            network->load_param_mem(param.c_str()) != 0 || !modelShapeValid(*network,impl_->options.pruneUnusedTail)) return {Code::InvalidModel};
+        const auto* weightData=model.weights;
+#if NCNN_VULKAN
+        if(impl_->options.backend==Backend::Vulkan)weightData=impl_->uploadWeights.data();
+#endif
+        BoundedReader weights(weightData, model.weightsSize);
+#if NCNN_VULKAN
+        const int loaded = impl_->loadNetwork(*network,weights,0);
+#else
         const int loaded = network->load_model(weights);
+#endif
         if (loaded != 0 || weights.truncated()) return {Code::ModelLoadFailed};
 #if NCNN_VULKAN
+        // Legacy fused kernels express storage rounding with scalar/vector
+        // half types. The packed-without-storage emulation is a distinct ABI;
+        // reject it explicitly instead of interpreting uint packing as colour.
+        if(impl_->gpuIo&&network->opt.use_fp16_packed&&!network->opt.use_fp16_storage)return {Code::UnsupportedBackend};
         if (impl_->options.backend == Backend::Vulkan) {
             if (!network->opt.use_vulkan_compute || network->vulkan_device() == nullptr) return {Code::GpuUnavailable};
             for (const auto* layer : network->layers()) {
@@ -414,8 +848,9 @@ Status Engine::load(ModelView model) noexcept {
 #endif
         for (const int scale : {impl_->flowScale, impl_->adaptiveFlow ? 6 : 1, impl_->adaptiveFlow ? 8 : 1}) {
             if (scale == 1) continue;
-            auto downscale = std::make_unique<ncnn::Net>();
-            auto upscale = std::make_unique<ncnn::Net>();
+            auto localDown = std::make_unique<ncnn::Net>();
+            auto localUp = std::make_unique<ncnn::Net>();
+            auto* downscale=localDown.get();auto* upscale=localUp.get();
             // 下采样只做 Interp：fp16 运算下源坐标超过 2048 时间距为 2 像素，4K 输入会错位取样；改用 fp32 运算
             // （存储仍为 fp16），代价可忽略。
             impl_->configureNet(*downscale, false);
@@ -423,68 +858,154 @@ Status Engine::load(ModelView model) noexcept {
             const BoundedReader empty(nullptr, 0);
             const std::string downParam = downscaleParam(scale);
             const std::string upParam = upscaleParam(scale);
+#if NCNN_VULKAN
+            const std::size_t downSlot=scale==impl_->flowScale?1:scale==6?3:5,upSlot=downSlot+1;
+            impl_->uploadParams[downSlot]=downParam;impl_->uploadParams[upSlot]=upParam;
+            // The fixed parent owns both networks before either load may submit.
+            (scale == impl_->flowScale ? impl_->downscale : impl_->extraDown[scale]) = std::move(localDown);
+            (scale == impl_->flowScale ? impl_->upscale : impl_->extraUp[scale]) = std::move(localUp);
+            if (downscale->load_param_mem(downParam.c_str()) != 0 || impl_->loadNetwork(*downscale,empty,downSlot) != 0 ||
+                upscale->register_custom_layer("rife.Warp", detail::createWarp) != 0 ||
+                upscale->load_param_mem(upParam.c_str()) != 0 || impl_->loadNetwork(*upscale,empty,upSlot) != 0)
+                return {Code::ModelLoadFailed};
+#else
             if (downscale->load_param_mem(downParam.c_str()) != 0 || downscale->load_model(empty) != 0 ||
                 upscale->register_custom_layer("rife.Warp", detail::createWarp) != 0 ||
                 upscale->load_param_mem(upParam.c_str()) != 0 || upscale->load_model(empty) != 0)
                 return {Code::ModelLoadFailed};
-            (scale == impl_->flowScale ? impl_->downscale : impl_->extraDown[scale]) = std::move(downscale);
-            (scale == impl_->flowScale ? impl_->upscale : impl_->extraUp[scale]) = std::move(upscale);
+            (scale == impl_->flowScale ? impl_->downscale : impl_->extraDown[scale]) = std::move(localDown);
+            (scale == impl_->flowScale ? impl_->upscale : impl_->extraUp[scale]) = std::move(localUp);
+#endif
         }
 #if NCNN_VULKAN
         if (impl_->gpuIo) {
-            struct Source { const char* data; int size; std::unique_ptr<ncnn::Pipeline>* slot; int x, y, z; };
+            struct Source {const char* data;int size;Impl::PipelineSlot* slot;int x,y,z;uint32_t kernel;const char* logical;std::vector<int> bindings;int pushCount;};
             const Source sources[] = {
-                {frame_preproc_comp_data, sizeof(frame_preproc_comp_data)-1, &impl_->preproc, 8, 8, 1},
-                {frame_postproc_comp_data, sizeof(frame_postproc_comp_data)-1, &impl_->postproc, 64, 1, 1},
-                {frame_reduce_comp_data, sizeof(frame_reduce_comp_data)-1, &impl_->reduce, 8, 8, 1}};
+                {frame_preproc_comp_data,sizeof(frame_preproc_comp_data)-1,&impl_->preproc,8,8,1,MGR_SHADER_PREPROC,"rife/preproc",{1,1},6},
+                {frame_postproc_comp_data,sizeof(frame_postproc_comp_data)-1,&impl_->postproc,64,1,1,MGR_SHADER_POSTPROC,"rife/postproc",{1,1,1,1,1},7},
+                {frame_reduce_comp_data,sizeof(frame_reduce_comp_data)-1,&impl_->reduce,8,8,1,MGR_SHADER_REDUCE,"rife/reduce",{1,1},7}};
+            auto pipelineStatus=[](MgcStatus status)->Status {
+                if(status==MGC_ARTIFACT_MISMATCH)return {Code::ArtifactMismatch};
+                if(status==MGC_INCOMPATIBLE_DOMAIN)return {Code::IncompatibleDomain};
+                if(status==MGC_OUT_OF_MEMORY)return {Code::AllocationFailed};
+                if(status==MGC_DEVICE_LOST)return {Code::DeviceLost};
+                return {Code::UnsupportedBackend};
+            };
             for (const auto& source : sources) {
                 if (source.slot == &impl_->reduce && !impl_->rawGpuInput) continue;
-                std::vector<std::uint32_t> spirv;
-                if (ncnn::compile_spirv_module(source.data, source.size, network->opt, spirv) != 0 || spirv.empty())
-                    return {Code::ModelLoadFailed};
-                auto pipeline = std::make_unique<ncnn::Pipeline>(impl_->device);
-                pipeline->set_optimal_local_size_xyz(source.x, source.y, source.z);
-                if (pipeline->create(spirv.data(), spirv.size() * sizeof(std::uint32_t), {}) != 0)
-                    return {Code::ModelLoadFailed};
-                *source.slot = std::move(pipeline);
+                auto compileOptions=network->opt;
+                if(source.slot==&impl_->reduce && impl_->options.directReducedInput)compileOptions.use_fp16_arithmetic=false;
+                const auto status=impl_->makePipeline(source.kernel,source.logical,source.data,source.size,compileOptions,
+                    source.x,source.y,source.z,source.bindings,source.pushCount,*source.slot);
+                if(status!=MGC_SUCCESS)return pipelineStatus(status);
+            }
+            const Source gpuSources[] = {
+                {frame_gpu_unpack_comp_data,sizeof(frame_gpu_unpack_comp_data)-1,&impl_->gpuUnpack,64,1,1,MGR_SHADER_GPU_UNPACK,"rife/gpu-unpack",{1,1},6},
+                {frame_gpu_image_read_comp_data,sizeof(frame_gpu_image_read_comp_data)-1,&impl_->gpuImageRead,64,1,1,MGR_SHADER_GPU_IMAGE_READ,"rife/gpu-image-read",{2,1},3},
+                {frame_gpu_statistics_comp_data,sizeof(frame_gpu_statistics_comp_data)-1,&impl_->gpuStatistics,8,8,1,MGR_SHADER_GPU_STATISTICS,"rife/gpu-statistics",{1,1,1},6},
+                {frame_gpu_patch_comp_data,sizeof(frame_gpu_patch_comp_data)-1,&impl_->gpuPatch,64,1,1,MGR_SHADER_GPU_PATCH,"rife/gpu-patch",{1,1,1,1},7},
+                {frame_gpu_image_write_comp_data,sizeof(frame_gpu_image_write_comp_data)-1,&impl_->gpuImageWrite,8,8,1,MGR_SHADER_GPU_IMAGE_WRITE,"rife/gpu-image-write",{1,1,1,2},3}};
+            for (const auto& source : gpuSources) {
+                const auto status=impl_->makePipeline(source.kernel,source.logical,source.data,source.size,network->opt,
+                    source.x,source.y,source.z,source.bindings,source.pushCount,*source.slot);
+                if(status!=MGC_SUCCESS)return pipelineStatus(status);
             }
             if (impl_->fusedWarp) {
-                std::vector<std::uint32_t> spirv;
                 const char* source = impl_->rawGpuInput ? frame_fused_rgb8_comp_data : frame_fused_comp_data;
                 const int size = impl_->rawGpuInput ? sizeof(frame_fused_rgb8_comp_data)-1 : sizeof(frame_fused_comp_data)-1;
-                if (ncnn::compile_spirv_module(source, size, network->opt, spirv) != 0)
-                    return {Code::ModelLoadFailed};
-                impl_->fused = std::make_unique<ncnn::Pipeline>(impl_->device);
-                impl_->fused->set_optimal_local_size_xyz(64, 1, 1);
-                if (spirv.empty() || impl_->fused->create(spirv.data(), spirv.size()*sizeof(std::uint32_t), {}) != 0)
-                    return {Code::ModelLoadFailed};
+                const auto status=impl_->makePipeline(MGR_SHADER_FUSED,impl_->rawGpuInput?"rife/fused-rgb8":"rife/fused",source,size,
+                    network->opt,64,1,1,{1,1,1,1,1,1},impl_->rawGpuInput?21:20,impl_->fused);
+                if(status!=MGC_SUCCESS)return pipelineStatus(status);
             }
+            for(const auto& binding:impl_->options.shaderBindings) {
+                bool used=false;for(const auto& record:impl_->shaderRecords)used|=record.number("kernel")==binding.kernel;
+                if(!used)return {Code::ArtifactMismatch};
+            }
+            impl_->catalogText=mgr_detail::dump(mgr_detail::J::O{{"schema_version",1},{"scope","RIFE owner kernels; builtin ncnn and custom Warp/AddLeaky remain runtime compiled"},
+                {"target_facts_scope","captured owner-used device macros only"},{"device_qualified",false},
+                {"runtime_compiler_compatibility",true},{"private_sdk_fingerprint",meguviz::private_sdk_fingerprint()},
+                {"variants",impl_->shaderRecords}});
         }
 #endif
-        impl_->network = std::move(network);
+        if(localNetwork)impl_->network=std::move(localNetwork);
+        impl_->graphText = std::move(param);
+        using mgr_detail::J;
+        J catalog=impl_->catalogText.empty()?J(J::O{{"schema_version",1},
+            {"scope","execution graphs; GPU target facts exist only for actual Vulkan owner kernels"},
+            {"device_qualified",false},{"runtime_compiler_compatibility",true},
+            {"private_sdk_fingerprint",meguviz::private_sdk_fingerprint()},{"variants",J::A{}}}):
+            mgr_detail::Parser(impl_->catalogText).parse();
+        J::A graphs;
+        J executionGraphs=J::O{{"main",J()},{"downscale",J()},{"upscale",J()},
+            {"downscale_6",J()},{"upscale_6",J()},{"downscale_8",J()},{"upscale_8",J()}};
+        auto graph=[&](const char* name,int scale,const ncnn::Net* net,bool down) {
+            if(!net)return;auto requested=impl_->requestedNetworkOptions;if(down)requested.use_fp16_arithmetic=false;
+            const J effective=graphOptions(net->opt);
+            graphs.push_back(J::O{{"name",name},{"flow_scale",scale},{"requested_options",graphOptions(requested)},
+                {"effective_options",effective},{"effective_options_hash",mgr_detail::sha256(mgr_detail::dump(effective))},
+                {"readback_provenance","Net.opt after pinned ncnn load_param/load_model sanitization"}});
+            const std::string key=scale!=impl_->flowScale?std::string(name)+"_"+std::to_string(scale):name;
+            executionGraphs[key]=executionGraphOptions(net->opt);
+        };
+        graph("main",impl_->flowScale,impl_->network.get(),false);
+        graph("downscale",impl_->flowScale,impl_->downscale.get(),true);
+        graph("upscale",impl_->flowScale,impl_->upscale.get(),false);
+        for(int scale=1;scale<=8;scale++){graph("downscale",scale,impl_->extraDown[scale].get(),true);graph("upscale",scale,impl_->extraUp[scale].get(),false);}
+        catalog["graphs"]=graphs;catalog["execution_graphs"]=executionGraphs;impl_->catalogText=mgr_detail::dump(catalog);
+        J::O execution={{"schema_version",1},{"effective_options_observed",true},{"graphs",executionGraphs},
+            {"frame_kind",0},{"stage_ns",J::A{0,0,0}}};
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+        const J activeConfiguration=J::O{{"backend",impl_->options.backend==Backend::Vulkan?"vulkan":"cpu"},
+            {"flow_scale",impl_->flowScale},{"gpu_io",impl_->gpuIo},{"fused_warp",impl_->fusedWarp},
+            {"raw_gpu_input",impl_->rawGpuInput},{"adaptive_flow",impl_->adaptiveFlow},
+            {"static_detail_guard_configured",impl_->protectStaticDetails},{"motion_guard_configured",bool(impl_->motionGuard)}};
+        execution["active_configuration_observed"]=true;execution["active_configuration"]=activeConfiguration;
+#endif
+        impl_->executionText=mgr_detail::dump(execution);
         impl_->loaded.store(true);
         return {};
     } catch (const std::bad_alloc&) { return {Code::AllocationFailed}; }
     catch (...) { return {Code::ModelLoadFailed}; }
 }
 
-Status Engine::processRgb8(ImageView left, ImageView right, float timestep, MutableImageView output,
-                           std::int64_t leftId, std::int64_t rightId, int flowScale) noexcept {
+Status Engine::processRgb8(ImageView left, ImageView right, double timestep, MutableImageView output,
+                           std::int64_t leftId, std::int64_t rightId, int flowScale, std::shared_ptr<void>* continuation) noexcept {
+#if NCNN_VULKAN
+    if(impl_->options.backend==Backend::Vulkan&&meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return {Code::DeviceLost};
+    if(impl_->options.backend==Backend::Vulkan&&!mgr_detail::alpha_endpoint(mgr_detail::classify_alpha(timestep)))
+        return processRgb8GpuOwned(left,right,timestep,output,leftId,rightId,flowScale,continuation);
+#else
+    (void)continuation;
+#endif
     try {
         std::unique_lock<std::mutex> guard(impl_->mutex, std::try_to_lock);
-        if (!guard.owns_lock()) return {Code::Busy};
+        if (!guard.owns_lock() || impl_->activeInference) return {Code::Busy};
+        MGR_OBSERVE_JOB(impl_->diagnosticLast=JobObservation{};impl_->diagnosticLast.started=true;)
         if (!impl_->loaded.load() || !impl_->network) return {Code::NotLoaded};
-        if (!std::isfinite(timestep) || timestep < 0.f || timestep > 1.f ||
+        const auto alphaClass = mgr_detail::classify_alpha(timestep);
+        if (alphaClass == mgr_detail::Alpha::Invalid ||
             left.width != right.width || left.height != right.height || left.width != output.width || left.height != output.height ||
             !layoutValid(left.data, left.width, left.height, left.strideBytes, left.byteCapacity, impl_->options.maxPixels) ||
             !layoutValid(right.data, right.width, right.height, right.strideBytes, right.byteCapacity, impl_->options.maxPixels) ||
             !layoutValid(output.data, output.width, output.height, output.strideBytes, output.byteCapacity, impl_->options.maxPixels))
             return {Code::InvalidArgument};
+        // The public API accepts a double. Only exact double endpoints may
+        // bypass inference; model arithmetic remains the legacy FP32 value.
+        const float modelTimestep=static_cast<float>(timestep);
         const auto rowBytes = static_cast<std::size_t>(left.width) * 3u;
-        if (timestep == 0.f || timestep == 1.f || !impl_->gpuIo)
+        MGR_OBSERVE_JOB(impl_->diagnosticLast.endpoint=mgr_detail::alpha_endpoint(alphaClass);
+        if(impl_->diagnosticLast.endpoint||!impl_->gpuIo) {
+            impl_->diagnosticLast.tensorCache[0]=CacheObservation::NotApplicable;
+            impl_->diagnosticLast.tensorCache[1]=CacheObservation::NotApplicable;
+            impl_->diagnosticLast.staticGuard=GuardObservation::NotApplicable;
+            impl_->diagnosticLast.motionGuard=GuardObservation::NotApplicable;
+        })
+        impl_->unreliablePermille.store(0); impl_->patchedTiles.store(0); impl_->histogramPermille.store(0);
+        for (auto& timing : impl_->timings) timing.store(0);
+        if (mgr_detail::alpha_endpoint(alphaClass) || !impl_->gpuIo)
             impl_->staging.resize(rowBytes * static_cast<std::size_t>(left.height));
-        if (timestep == 0.f || timestep == 1.f) {
-            const auto image = timestep == 0.f ? left : right;
+        if (mgr_detail::alpha_endpoint(alphaClass)) {
+            const auto image = alphaClass == mgr_detail::Alpha::Zero ? left : right;
             for (int y = 0; y < image.height; ++y)
                 std::memcpy(impl_->staging.data() + static_cast<std::size_t>(y) * rowBytes,
                             image.data + static_cast<std::size_t>(y) * image.strideBytes, rowBytes);
@@ -500,17 +1021,15 @@ Status Engine::processRgb8(ImageView left, ImageView right, float timestep, Muta
                 scale = flowScale > 0 ? flowScale
                     : static_cast<std::int64_t>(left.width) * left.height > AdaptiveFlowPixels ? 8 : impl_->flowScale;
             else if (flowScale > 0 && flowScale != impl_->flowScale) return {Code::InvalidArgument};
+            MGR_OBSERVE_JOB(impl_->diagnosticLast.effectiveScale=scale;impl_->diagnosticLast.cacheLookupScale=impl_->gpuIo?scale:0;)
             const bool extra = scale != impl_->flowScale;
             if (extra && (scale < 0 || scale > 8 || !impl_->extraDown[scale])) return {Code::InvalidArgument};
-            ncnn::Net* const downNet = extra ? impl_->extraDown[scale].get() : impl_->downscale.get();
-            ncnn::Net* const upNet = extra ? impl_->extraUp[scale].get() : impl_->upscale.get();
             const int align = 32 * scale;
             const int paddedWidth = (left.width + align - 1) / align * align;
             const int paddedHeight = (left.height + align - 1) / align * align;
             ncnn::Mat time(paddedWidth / scale, paddedHeight / scale, 1);
             if (time.empty()) return {Code::AllocationFailed};
-            time.fill(timestep);
-            const bool commandPath = scale != 1 || impl_->gpuIo;
+            time.fill(modelTimestep);
             ncnn::Mat first, second;
             if (!impl_->gpuIo) {
                 first = inputTensor(left, paddedWidth, paddedHeight);
@@ -520,265 +1039,10 @@ Status Engine::processRgb8(ImageView left, ImageView right, float timestep, Muta
             auto prepared = nowNs();
             auto inferred = prepared;
             ncnn::Mat result;
-            if (!commandPath) {
                 ncnn::Extractor extractor = impl_->network->create_extractor();
                 if (extractor.input("in0", first) != 0 || extractor.input("in1", second) != 0 ||
                     extractor.input("in2", time) != 0 || extractor.extract("out0", result) != 0)
                     return {Code::InferenceFailed};
-            } else {
-#if NCNN_VULKAN
-                // 一条命令缓冲：每个输入只上传一次，中间结果全程留在显存，只下载最终输出。
-                const ncnn::Option& opt = impl_->network->opt;
-                ncnn::VkCompute command(impl_->device);
-                ncnn::VkMat full0, full1, flowInput0, flowInput1, merged, flow, mask;
-                std::vector<ncnn::Mat> keepAlive;
-                // 各 Extractor 持有其 VkMat，必须存活到 submit_and_wait 之后。
-                std::vector<ncnn::Extractor> downs;
-                std::optional<ncnn::Extractor> up;
-                std::vector<Impl::GpuFrame> fresh;
-                if (impl_->gpuIo) {
-                    // 只上传原始 RGB8 字节；解包、归一化与补零在 GPU 完成。缓存命中的帧完全不上传。
-                    const std::size_t elem = opt.use_fp16_storage ? 2u : 4u;
-                    for (const auto& [image, id, target, reduced] : {std::tuple{left, leftId, &full0, &flowInput0},
-                                                                     std::tuple{right, rightId, &full1, &flowInput1}}) {
-                        const Impl::GpuFrame* hit = nullptr;
-                        for (const auto& frame : impl_->frames)
-                            if (id >= 0 && frame.id == id && frame.scale == scale && frame.width == paddedWidth && frame.height == paddedHeight &&
-                                frame.sourceWidth == image.width && frame.sourceHeight == image.height &&
-                                frame.sourceStride == image.strideBytes) hit = &frame;
-                        if (hit != nullptr) { *target = hit->full; *reduced = hit->reduced; continue; }
-                        const std::size_t bytes = (static_cast<std::size_t>(image.height) - 1) * image.strideBytes +
-                                                  static_cast<std::size_t>(image.width) * 3u;
-                        const int words = static_cast<int>((bytes + 3) / 4);
-                        ncnn::Mat raw;
-                        if (bytes % 4 == 0 && reinterpret_cast<std::uintptr_t>(image.data) % 4 == 0) {
-                            raw = ncnn::Mat(words, const_cast<std::uint8_t*>(image.data), static_cast<std::size_t>(4u));
-                        } else {
-                            raw.create(words, static_cast<std::size_t>(4u));
-                            if (raw.empty()) return {Code::AllocationFailed};
-                            static_cast<std::uint32_t*>(raw.data)[words - 1] = 0;
-                            std::memcpy(raw.data, image.data, bytes);
-                        }
-                        keepAlive.push_back(raw);
-                        ncnn::VkMat rawGpu;
-                        command.record_clone(raw, rawGpu, opt);
-                        if (impl_->rawGpuInput) {
-                            *target = rawGpu;
-                            reduced->create(paddedWidth/scale, paddedHeight/scale, 3, elem, 1, impl_->blobAllocator);
-                            if (rawGpu.empty() || reduced->empty()) return {Code::AllocationFailed};
-                            std::vector<ncnn::vk_constant_type> constants(7);
-                            constants[0].i=image.width; constants[1].i=image.height;
-                            constants[2].i=static_cast<int>(image.strideBytes);
-                            constants[3].i=reduced->w; constants[4].i=reduced->h;
-                            constants[5].i=static_cast<int>(reduced->cstep); constants[6].i=scale;
-                            command.record_pipeline(impl_->reduce.get(), {rawGpu,*reduced}, constants, *reduced);
-                        } else {
-                            target->create(paddedWidth, paddedHeight, 3, elem, 1, impl_->blobAllocator);
-                            if (rawGpu.empty() || target->empty()) return {Code::AllocationFailed};
-                            std::vector<ncnn::vk_constant_type> constants(6);
-                            constants[0].i = image.width;
-                            constants[1].i = image.height;
-                            constants[2].i = static_cast<int>(image.strideBytes);
-                            constants[3].i = target->w;
-                            constants[4].i = target->h;
-                            constants[5].i = static_cast<int>(target->cstep);
-                            command.record_pipeline(impl_->preproc.get(), {rawGpu, *target}, constants, *target);
-                            *reduced = *target;
-                            if (scale != 1) {
-                                downs.push_back(downNet->create_extractor());
-                                downs.back().set_light_mode(false);
-                                if (downs.back().input("in0", *target) != 0 || downs.back().extract("half0", *reduced, command) != 0)
-                                    return {Code::InferenceFailed};
-                            }
-                        }
-                        if (id >= 0) fresh.push_back({id, paddedWidth, paddedHeight, *target, *reduced,
-                            image.width, image.height, image.strideBytes, scale});
-                    }
-                } else {
-                    command.record_upload(first, full0, opt);
-                    command.record_upload(second, full1, opt);
-                    flowInput0 = full0;
-                    flowInput1 = full1;
-                    if (scale != 1) {
-                        downs.push_back(downNet->create_extractor());
-                        auto& down = downs.back();
-                        down.set_light_mode(false);
-                        if (down.input("in0", full0) != 0 || down.input("in1", full1) != 0 ||
-                            down.extract("half0", flowInput0, command) != 0 || down.extract("half1", flowInput1, command) != 0)
-                            return {Code::InferenceFailed};
-                    }
-                }
-                prepared = nowNs();
-                ncnn::Extractor estimate = impl_->network->create_extractor();
-                // Vulkan records resource lifetimes/barriers; extracted flow/mask keep their own references.
-                // Reclaim dead internal activations instead of retaining the whole graph until completion.
-                estimate.set_light_mode(impl_->fusedWarp);
-                if (estimate.input("in0", flowInput0) != 0 || estimate.input("in1", flowInput1) != 0 ||
-                    estimate.input("in2", time) != 0) return {Code::InferenceFailed};
-                if (scale == 1) {
-                    if (estimate.extract("out0", merged, command) != 0) return {Code::InferenceFailed};
-                } else {
-                    if (estimate.extract(FlowBlob, flow, command) != 0 || estimate.extract(MaskBlob, mask, command) != 0)
-                        return {Code::InferenceFailed};
-                    if (!impl_->fusedWarp) {
-                        up.emplace(upNet->create_extractor());
-                        if (up->input("in0", full0) != 0 || up->input("in1", full1) != 0 || up->input("flow", flow) != 0 ||
-                            up->input("mask", mask) != 0 || up->extract("out0", merged, command) != 0)
-                            return {Code::InferenceFailed};
-                    }
-                }
-                if (!impl_->fusedWarp && (merged.dims != 3 || merged.w != paddedWidth || merged.h != paddedHeight || merged.c * merged.elempack != 3))
-                    return {Code::InvalidOutput};
-                if (impl_->gpuIo) {
-                    // GPU 上缩放、饱和取整并紧凑打包为 RGB8，同时标记任何非有限值；只下载字节与标志。
-                    ncnn::VkMat planar = merged;
-                    if (!impl_->fusedWarp && merged.elempack != 1) impl_->device->convert_packing(merged, planar, 1, command, opt);
-                    const int words = static_cast<int>((rowBytes * static_cast<std::size_t>(left.height) + 3) / 4);
-                    ncnn::VkMat packed, flag;
-                    packed.create(words, static_cast<std::size_t>(4u), 1, impl_->blobAllocator);
-                    // [0] 非有限值标志，[1] 运动置信度不足的抽样像素数，[2..] 同一计数按 16×9 分块（仅融合路径）。
-                    ncnn::Mat zero(2 + GuardTiles, static_cast<std::size_t>(4u));
-                    if (packed.empty() || zero.empty()) return {Code::AllocationFailed};
-                    std::memset(zero.data, 0, (2 + GuardTiles) * sizeof(std::uint32_t));
-                    keepAlive.push_back(zero);
-                    command.record_clone(zero, flag, opt);
-                    std::vector<ncnn::vk_constant_type> constants(impl_->fusedWarp ? (impl_->rawGpuInput ? 21 : 20) : 7);
-                    constants[0].i = left.width;
-                    constants[1].i = left.height;
-                    constants[2].i = words;
-                    constants[3].i = paddedWidth;
-                    if (impl_->fusedWarp) {
-                        if (flow.w != paddedWidth/scale || flow.h != paddedHeight/scale || flow.c*flow.elempack != 4 ||
-                            mask.w != flow.w || mask.h != flow.h || mask.c*mask.elempack != 1 ||
-                            (flow.elempack != 1 && flow.elempack != 4)) return {Code::InvalidOutput};
-                        constants[4].i = static_cast<int>(impl_->rawGpuInput ? left.strideBytes : full0.cstep);
-                        constants[5].i = impl_->protectStaticDetails ? 1 : 0;
-                        constants[6].i = paddedHeight;
-                        constants[7].i = flow.w; constants[8].i = flow.h;
-                        constants[9].i = static_cast<int>(flow.cstep);
-                        constants[10].i = flow.elempack; constants[11].i = scale;
-                        if (impl_->rawGpuInput) constants[12].i = static_cast<int>(right.strideBytes);
-                        const int extra = impl_->rawGpuInput ? 13 : 12;
-                        constants[extra].f = timestep;
-                        constants[extra + 1].i = impl_->motionGuard ? 1 : 0;
-                        // 整帧亮度变化（闪白、淡入淡出）：抽样通道均值的偏移与增益，供置信度比较时扣除。
-                        double meanL[3] = {0, 0, 0}, meanR[3] = {0, 0, 0};
-                        sampleMeans(left, meanL);
-                        sampleMeans(right, meanR);
-                        for (int c = 0; c < 3; ++c) {
-                            constants[extra + 2 + c].f = static_cast<float>((meanR[c] - meanL[c]) / 255.0);
-                            constants[extra + 5 + c].f = static_cast<float>(meanL[c] > 8.0 ? std::clamp(meanR[c] / meanL[c], 0.0, 8.0) : 1.0);
-                        }
-                        ncnn::VkMat dispatcher;
-                        dispatcher.dims = 1; dispatcher.w = (left.width*left.height+3)/4; dispatcher.h = dispatcher.c = 1;
-                        command.record_pipeline(impl_->fused.get(), {flow, packed, flag, full0, full1, mask}, constants, dispatcher);
-                    } else {
-                        constants[4].i = static_cast<int>(planar.cstep);
-                        constants[5].i = static_cast<int>(full0.cstep);
-                        constants[6].i = impl_->protectStaticDetails ? 1 : 0;
-                        command.record_pipeline(impl_->postproc.get(), {planar, packed, flag, full0, full1}, constants, packed);
-                    }
-                    ncnn::Mat bytes, flagged;
-                    command.record_clone(packed, bytes, opt);
-                    command.record_clone(flag, flagged, opt);
-                    if (command.submit_and_wait() != 0) return {Code::InferenceFailed};
-                    inferred = nowNs();
-                    // 只有整条命令成功后才把新帧放进缓存，失败路径不会留下未写入的显存张量。
-                    for (auto& frame : fresh) {
-                        impl_->frames[impl_->nextFrame] = frame;
-                        impl_->nextFrame = (impl_->nextFrame + 1) % 3;
-                    }
-                    if (flagged.empty() || bytes.empty() || static_cast<const std::uint32_t*>(flagged.data)[0] != 0)
-                        return {Code::InvalidOutput};
-                    std::array<bool, GuardTiles> patch{};
-                    if (impl_->fusedWarp && impl_->motionGuard) {
-                        // 抽样：每 8 组（每组 4 像素）计一组，按组首像素归入分块，与着色器一致。
-                        const auto* counts = static_cast<const std::uint32_t*>(flagged.data);
-                        std::array<std::int64_t, GuardTiles> sampledTiles{};
-                        const std::int64_t pixels = static_cast<std::int64_t>(left.width) * left.height;
-                        std::int64_t sampled = 0;
-                        for (std::int64_t first = 0; first < pixels; first += 32) {
-                            const std::int64_t ty = first / left.width, tx = first - ty * left.width;
-                            const auto n = std::min<std::int64_t>(4, pixels - first);
-                            sampledTiles[static_cast<std::size_t>((ty * GuardTilesY / left.height) * GuardTilesX + tx * GuardTilesX / left.width)] += n;
-                            sampled += n;
-                        }
-                        impl_->unreliablePermille.store(static_cast<int>(std::min<std::int64_t>(1000, counts[1] * 1000 / std::max<std::int64_t>(1, sampled))));
-                        // 局部转场（画中画、分屏切换、局部字幕卡）：多数像素不可靠的分块换成最近原帧；
-                        // 与之相邻、也有相当比例不可靠的分块一并替换，避免接缝处残留拉扯。
-                        std::array<int, GuardTiles> permille{};
-                        for (int t = 0; t < GuardTiles; ++t)
-                            permille[t] = sampledTiles[t] ? static_cast<int>(counts[2 + t] * 1000 / sampledTiles[t]) : 0;
-                        for (int t = 0; t < GuardTiles; ++t) patch[t] = permille[t] >= TilePatchPermille;
-                        std::array<bool, GuardTiles> core = patch;
-                        for (int t = 0; t < GuardTiles; ++t) {
-                            if (core[t] || permille[t] < TileNeighbourPermille) continue;
-                            const int x = t % GuardTilesX, y = t / GuardTilesX;
-                            for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-                                const int nx = x + dx, ny = y + dy;
-                                if (nx >= 0 && ny >= 0 && nx < GuardTilesX && ny < GuardTilesY && core[ny * GuardTilesX + nx]) patch[t] = true;
-                            }
-                        }
-                        // 分块回填只在周围静止时才不可见（分屏切换、静止画面上的画中画）。运动画面里（快速摇镜、
-                        // 运动模糊）原帧方块与周围补帧对不上，形成拼贴方块并让该区域退回 30 fps——宿主真机抓帧所见。
-                        // 已选分块周围的未选邻块里运动的超过三分之一时（摇镜：几乎全部在动），整帧都不回填；
-                        // 局部切换（分屏、画中画）只有边界上部分变化的少数邻块在动。
-                        std::array<double, GuardTiles> motion{};
-                        tileMotion(left, right, motion);
-                        std::array<bool, GuardTiles> ring{};
-                        for (int t = 0; t < GuardTiles; ++t) {
-                            if (!patch[t]) continue;
-                            const int x = t % GuardTilesX, y = t / GuardTilesX;
-                            for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-                                const int nx = x + dx, ny = y + dy;
-                                if (nx < 0 || ny < 0 || nx >= GuardTilesX || ny >= GuardTilesY) continue;
-                                if (!patch[ny * GuardTilesX + nx]) ring[ny * GuardTilesX + nx] = true;
-                            }
-                        }
-                        int ringTiles = 0, movingRing = 0;
-                        for (int t = 0; t < GuardTiles; ++t) if (ring[t]) { ++ringTiles; if (motion[t] > StaticTileDiff) ++movingRing; }
-                        if (movingRing * 3 > ringTiles) patch.fill(false);
-                        impl_->histogramPermille.store(histogramDistancePermille(left, right));
-                    }
-                    // No output writes until fence completion and the finite-value flag are validated.
-                    // The download is already a stable tight RGB8 image; avoid an extra 4K staging copy.
-                    for (int y = 0; y < output.height; ++y)
-                        std::memcpy(output.data + static_cast<std::size_t>(y)*output.strideBytes,
-                            static_cast<const std::uint8_t*>(bytes.data)+static_cast<std::size_t>(y)*rowBytes,rowBytes);
-                    int patched = 0;
-                    const ImageView& nearest = timestep <= 0.5f ? left : right;
-                    for (int t = 0; t < GuardTiles; ++t) {
-                        if (!patch[t]) continue;
-                        ++patched;
-                        // 分块范围与着色器的 x*16/width 归属一致。
-                        const int tx = t % GuardTilesX, ty = t / GuardTilesX;
-                        const int x0 = (tx * output.width + GuardTilesX - 1) / GuardTilesX;
-                        const int x1 = ((tx + 1) * output.width + GuardTilesX - 1) / GuardTilesX;
-                        const int y0 = (ty * output.height + GuardTilesY - 1) / GuardTilesY;
-                        const int y1 = ((ty + 1) * output.height + GuardTilesY - 1) / GuardTilesY;
-                        for (int y = y0; y < y1; ++y)
-                            std::memcpy(output.data + static_cast<std::size_t>(y) * output.strideBytes + static_cast<std::size_t>(x0) * 3,
-                                nearest.data + static_cast<std::size_t>(y) * nearest.strideBytes + static_cast<std::size_t>(x0) * 3,
-                                static_cast<std::size_t>(x1 - x0) * 3);
-                    }
-                    impl_->patchedTiles.store(patched);
-                    impl_->timings[0].store(prepared-began);
-                    impl_->timings[1].store(inferred-prepared);
-                    impl_->timings[2].store(nowNs()-inferred);
-                    return {};
-                } else {
-                    ncnn::Mat downloaded;
-                    command.record_download(merged, downloaded, opt);
-                    if (command.submit_and_wait() != 0) return {Code::InferenceFailed};
-                    ncnn::Mat unpacked = downloaded;
-                    if (downloaded.elempack != 1) ncnn::convert_packing(downloaded, unpacked, 1, opt);
-                    if (unpacked.elembits() == 16) ncnn::cast_float16_to_float32(unpacked, result, opt);
-                    else result = unpacked;
-                }
-#else
-                return {Code::UnsupportedBackend};
-#endif
-            }
             if (!impl_->gpuIo) {
                 inferred = nowNs();
                 if (result.empty() || result.dims != 3 || result.w != paddedWidth || result.h != paddedHeight ||
@@ -807,11 +1071,42 @@ Status Engine::processRgb8(ImageView left, ImageView right, float timestep, Muta
         for (int y = 0; y < output.height; ++y)
             std::memcpy(output.data + static_cast<std::size_t>(y) * output.strideBytes,
                         impl_->staging.data() + static_cast<std::size_t>(y) * rowBytes, rowBytes);
+        MGR_OBSERVE_JOB(impl_->diagnosticLast.completed=true;)
         return {};
     } catch (const std::bad_alloc&) { return {Code::AllocationFailed}; }
     catch (...) { return {Code::InferenceFailed}; }
 }
 
 Backend Engine::backend() const noexcept { return impl_->options.backend; }
-bool Engine::ready() const noexcept { return impl_->loaded.load(); }
+bool Engine::ready() const noexcept {
+#if NCNN_VULKAN
+    if(impl_->options.backend==Backend::Vulkan&&meguviz::ncnn_domain_is_lost(impl_->options.computeDomain))return false;
+#endif
+    return impl_->loaded.load();
+}
+std::string Engine::effectiveOptions() const {
+    if(!impl_->network)return {};
+    const auto& o=impl_->network->opt;
+    return std::string("ncnn=7e36d25cb153092ba87a60530455c7376fedf452;vulkan=")+std::to_string(o.use_vulkan_compute)+
+        ";threads="+std::to_string(o.num_threads)+";fp16_packed="+std::to_string(o.use_fp16_packed)+
+        ";fp16_storage="+std::to_string(o.use_fp16_storage)+";fp16_arithmetic="+std::to_string(o.use_fp16_arithmetic)+
+        ";bf16_storage="+std::to_string(o.use_bf16_storage)+";int8_inference="+std::to_string(o.use_int8_inference)+
+        ";packing="+std::to_string(o.use_packing_layout)+";downscale_fp16_arithmetic=0;direct_reduce_fp16_arithmetic="+
+        std::to_string(impl_->options.directReducedInput?false:o.use_fp16_arithmetic)+
+        ";gpu_io="+std::to_string(impl_->gpuIo)+";fused="+std::to_string(impl_->fusedWarp)+
+        ";raw="+std::to_string(impl_->rawGpuInput)+";adaptive="+std::to_string(impl_->adaptiveFlow)+
+        ";static="+std::to_string(impl_->protectStaticDetails)+";motion="+std::to_string(impl_->motionGuard)+
+        ";flow_scale="+std::to_string(impl_->flowScale)+";final_coordinates=fp32;remaining_options=pinned_ncnn_defaults;shader_catalog_sha256="+
+        mgr_detail::sha256(impl_->catalogText);
+}
+const std::string& Engine::runtimeGraph() const noexcept {return impl_->graphText;}
+const std::string& Engine::shaderCatalog() const noexcept {return impl_->catalogText;}
+const std::string& Engine::executionInfo() const noexcept {return impl_->executionText;}
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+JobObservation Engine::diagnosticJob() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->diagnosticLast;}
+#endif
+void Engine::shaderCounts(uint32_t out[3]) const noexcept {std::copy(impl_->shaderCounters,impl_->shaderCounters+3,out);}
+#include "frame_gpu.inc"
+#include "frame_rgb_owned.inc"
+#undef MGR_OBSERVE_JOB
 } // namespace meguviz::rife::legacy

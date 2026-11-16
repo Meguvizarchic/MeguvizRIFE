@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "scope": "RIFE-owned standalone kernels; builtin ncnn and custom Warp/AddLeaky retain runtime compiler",
+  "profile_id": "ncnn-compat",
+  "profile_version": "20261020",
+  "ncnn_revision": "7e36d25cb153092ba87a60530455c7376fedf452",
+  "capture_api": "mgr_plan_shader_catalog",
+  "capture_cli": "mgr-cli export-shader-requests --run-spec capture.json --report capture-report.json",
+  "facts_provenance": "Compute authoritative canonical JSON from exact enabled VkDevice feature snapshot; no synthetic runtime qualification",
+  "device_macro_scope": "owner-used ncnn storage helpers; not the macro closure of all builtin ncnn shaders",
+  "binding_identity": ["kernel", "logical_shader_id", "variant_key", "effective_options_hash", "target_facts_hash", "source_sha256", "spirv_sha256", "private_sdk_fingerprint", "domain_id", "domain_generation"],
+  "ownership": "plan retains pack; accepted jobs retain plan through physical retirement; pipeline is borrowed from pack",
+  "compatibility_miss": "only absent active-kernel binding is recorded before runtime compiler fallback",
+  "explicit_binding_error": "hash, SDK, target facts, source, variant, domain, storage layout, local size or pipeline failure rejects plan; never fallback",
+  "default_runtime_compiler": true,
+  "no_runtime_profile": false,
+  "compute_loader_gate": {"target_env": ["vulkan1.0", "vulkan1.1", "vulkan1.3"], "required_caps": "validated against exact enabled device snapshot, effective Options and captured target facts", "unsupported": "reject; never rewrite captured facts or fall back from an explicit invalid binding"},
+  "kernels": [
+    {"id": 1, "logical_shader_id": "rife/preproc", "binding_types": [1, 1], "push_constant_slots": 6, "local_size": [8, 8, 1]},
+    {"id": 2, "logical_shader_id": "rife/postproc", "binding_types": [1, 1, 1, 1, 1], "push_constant_slots": 7, "local_size": [64, 1, 1]},
+    {"id": 3, "logical_shader_id": "rife/reduce", "binding_types": [1, 1], "push_constant_slots": 7, "local_size": [8, 8, 1]},
+    {"id": 4, "logical_shader_id": ["rife/fused", "rife/fused-rgb8"], "binding_types": [1, 1, 1, 1, 1, 1], "push_constant_slots": [20, 21], "local_size": [64, 1, 1]},
+    {"id": 5, "logical_shader_id": "rife/gpu-unpack", "binding_types": [1, 1], "push_constant_slots": 6, "local_size": [64, 1, 1]},
+    {"id": 6, "logical_shader_id": "rife/gpu-image-read", "binding_types": [2, 1], "push_constant_slots": 3, "local_size": [64, 1, 1]},
+    {"id": 7, "logical_shader_id": "rife/gpu-statistics", "binding_types": [1, 1, 1], "push_constant_slots": 6, "local_size": [8, 8, 1]},
+    {"id": 8, "logical_shader_id": "rife/gpu-patch", "binding_types": [1, 1, 1, 1], "push_constant_slots": 7, "local_size": [64, 1, 1]},
+    {"id": 9, "logical_shader_id": "rife/gpu-image-write", "binding_types": [1, 1, 1, 2], "push_constant_slots": 3, "local_size": [8, 8, 1]}
+  ]
+}

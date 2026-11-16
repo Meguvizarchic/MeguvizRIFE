@@ -5,7 +5,8 @@ model weights, CLI, image codec, filesystem model loader or third-party download
 
 - RIFE upstream: https://github.com/nihui/rife-ncnn-vulkan
 - Source/tag: `a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7` / `20221029`, MIT, retained in `upstream/LICENSE`.
-- `rife_warp.cpp` derives from `src/warp.cpp`; the two `.comp` files are unchanged upstream shaders.
+- `rife_warp.cpp` derives from `src/warp.cpp`; the two `.comp` files retain the upstream arithmetic
+  and add non-finite/extreme-coordinate checks before float-to-integer conversion.
 - `frame_engine.cpp` follows the v4 no-TTA flow in `src/rife.cpp`: RGB / 255, zero padding to 32,
   inputs `in0/in1/in2`, output `out0`, crop, round and clamp to RGB8.
 - ncnn is supplied by the parent target: Tencent/ncnn `7e36d25cb153092ba87a60530455c7376fedf452`

@@ -3,6 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <meguviz/compute.h>
+#include <meguviz/rife.h>
+#include <vector>
 
 namespace ncnn { class VulkanDevice; }
 
@@ -21,7 +25,10 @@ enum class Code : int {
     Busy = 8,
     AllocationFailed = 9,
     InferenceFailed = 10,
-    InvalidOutput = 11
+    InvalidOutput = 11,
+    ArtifactMismatch = 12,
+    IncompatibleDomain = 13,
+    DeviceLost = 14
 };
 
 struct Status {
@@ -36,8 +43,16 @@ struct Options {
     int gpuIndex = 0;
     // Borrowed from Compute; its retained domain outlives this engine.
     const ncnn::VulkanDevice* domainDevice = nullptr;
+    // Required by the Vulkan upload-owner integration. The owner
+    // retains this actual Compute domain before any model submission.
+    MgcDomain* computeDomain = nullptr;
     int threads = 1;
     std::size_t maxPixels = 1920u * 1080u;
+    bool pruneUnusedTail = false;
+    bool directReducedInput = false;
+    bool fuseAddLeaky = false;
+    MgcShaderpack* shaderpack = nullptr;
+    std::vector<MgrShaderBinding> shaderBindings;
 };
 
 // Callers verify the approved model hashes before load. Buffers are borrowed only during load.
@@ -65,8 +80,29 @@ struct MutableImageView {
     std::size_t byteCapacity = 0;
 };
 
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+// Optional observations: actual branches reached, never an inference
+// from a requested flag or a frame identifier. A failed job is incomplete.
+enum class CacheObservation : uint8_t { Unknown, NotApplicable, Disabled, Miss, Hit, SharedPending };
+enum class GuardObservation : uint8_t { Unknown, NotApplicable, Disabled, Executed };
+struct JobObservation {
+    bool started = false;
+    bool completed = false;
+    bool endpoint = false;
+    int effectiveScale = 0;
+    int cacheLookupScale = 0;
+    CacheObservation tensorCache[2] = {CacheObservation::Unknown, CacheObservation::Unknown};
+    CacheObservation bridgeCache[2] = {CacheObservation::NotApplicable, CacheObservation::NotApplicable};
+    GuardObservation staticGuard = GuardObservation::Unknown;
+    GuardObservation motionGuard = GuardObservation::Unknown;
+    bool cachePublishObserved = false;
+    uint32_t cachePublishedCount = 0;
+};
+#endif
+
 // One bounded worker owns an engine. Concurrent load/process returns Busy without waiting.
-// Destroy only after callers have stopped; the destructor never destroys ncnn's global GPU instance.
+// Destroy only after callers have stopped. Compute's retained domain owns the
+// global instance lifetime; this Engine never calls destroy_gpu_instance itself.
 class Engine final {
 public:
     static std::unique_ptr<Engine> create(const Options& options, Status* status = nullptr) noexcept;
@@ -82,6 +118,15 @@ public:
     Status configure(bool fp16, int flowScale, bool gpuIo, bool protectStaticDetails = false, bool fusedWarp = false,
                      bool rawGpuInput = false, bool adaptiveFlow = false) noexcept;
     Status load(ModelView model) noexcept;
+    // Explicit model-upload retirement. A finite budget applies per transfer;
+    // timeout/unknown state preserves all Net/model/allocator ownership.
+    Status pollUploads(std::uint64_t waitNs = 0) noexcept;
+    Status close() noexcept;
+    // Visits abandoned Engine implementations without requiring their handles.
+    // BUSY means at least one whole implementation remains owned by the registry.
+    // A non-null domain selects only abandoned uploads owned by that domain;
+    // null explicitly services the whole Engine registry.
+    static Status pollRetiredUploads(std::uint64_t waitNs = 0, MgcDomain* domain = nullptr) noexcept;
     // 最近一次成功插帧的阶段耗时（纳秒）：0 预处理，1 推理（含上传/下载），2 后处理。
     void timings(std::int64_t out[3]) const noexcept;
     // 最近一次融合插帧中运动置信度不足的像素比例（千分比，抽样）；外层据此把转场帧换成最近原帧。
@@ -94,15 +139,39 @@ public:
     void setMotionGuard(bool enabled) noexcept;
     // leftId/rightId ≥ 0 时按帧 ID 复用显存张量（仅 gpuIo 路径）；同一 ID 的内容必须不变，-1 表示不缓存。
     // flowScale > 0 时本次使用该光流比例（仅 adaptiveFlow，可为 4/6/8）；0 按像素数自动选择。
-    Status processRgb8(ImageView left, ImageView right, float timestep, MutableImageView output,
-                       std::int64_t leftId = -1, std::int64_t rightId = -1, int flowScale = 0) noexcept;
+    // Accepted Compute jobs retain continuation across a deferred GPU scope.
+    // Resume only after that scope's complete record, retirement and host
+    // finalize succeeded; a failed recording is terminal after retirement.
+    // Reset continuation outside Engine methods once complete or retired-failed.
+    Status processRgb8(ImageView left, ImageView right, double timestep, MutableImageView output,
+                       std::int64_t leftId = -1, std::int64_t rightId = -1, int flowScale = 0,
+                       std::shared_ptr<void>* continuation = nullptr) noexcept;
+    // Compute owns command submission/retirement. Only small guard summaries
+    // return to the host; full-resolution sources stay alive through final patch.
+    MgcStatus processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right, MgcLease* output,
+                         double timestep, std::int64_t leftId, std::int64_t rightId, int flowScale = 0,
+                         std::shared_ptr<void>* continuation = nullptr) noexcept;
     Backend backend() const noexcept;
     bool ready() const noexcept;
+    std::string effectiveOptions() const;
+    const std::string& runtimeGraph() const noexcept;
+    const std::string& shaderCatalog() const noexcept;
+    const std::string& executionInfo() const noexcept;
+#if defined(MGR_ENABLE_JOB_OBSERVATION)
+    JobObservation diagnosticJob() const;
+#endif
+    void shaderCounts(uint32_t out[3]) const noexcept;
 
 private:
     class Impl;
-    explicit Engine(std::unique_ptr<Impl> impl) noexcept;
-    std::unique_ptr<Impl> impl_;
+    explicit Engine(std::shared_ptr<Impl> impl) noexcept;
+    Status loadOwned(ModelView model) noexcept;
+    Status configureOwned(bool fp16, int flowScale, bool gpuIo, bool protectStaticDetails,
+                          bool fusedWarp, bool rawGpuInput, bool adaptiveFlow) noexcept;
+    Status processRgb8GpuOwned(ImageView left, ImageView right, double timestep, MutableImageView output,
+                              std::int64_t leftId, std::int64_t rightId, int flowScale,
+                              std::shared_ptr<void>* continuation) noexcept;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace meguviz::rife::legacy

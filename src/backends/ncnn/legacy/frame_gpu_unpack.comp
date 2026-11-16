@@ -1,0 +1,15 @@
+#version 450
+layout(binding=0) readonly buffer source_blob { uint source_data[]; };
+layout(binding=1) writeonly buffer target_blob { uint target_data[]; };
+layout(push_constant) uniform parameter { int width; int height; int stride; int channels; int offset; int words; } p;
+void main() {
+    int word=int(gl_GlobalInvocationID.x); if(word>=p.words) return;
+    uint value=0u;
+    for(int k=0;k<4;k++) {
+        int i=word*4+k; if(i>=p.width*p.height*3) break;
+        int pixel=i/3, y=pixel/p.width, x=pixel-y*p.width;
+        int source=p.offset+y*p.stride+x*p.channels+i%3;
+        value|=((source_data[source>>2]>>uint((source&3)*8))&255u)<<uint(k*8);
+    }
+    target_data[word]=value;
+}

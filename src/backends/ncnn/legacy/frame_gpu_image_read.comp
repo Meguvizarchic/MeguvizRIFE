@@ -1,0 +1,15 @@
+#version 450
+layout(rgba8,binding=0) uniform readonly image2D source_image;
+layout(binding=1) writeonly buffer target_blob { uint target_data[]; };
+layout(push_constant) uniform parameter { int width; int height; int words; } p;
+void main() {
+    int word=int(gl_GlobalInvocationID.x); if(word>=p.words) return;
+    uint value=0u;
+    for(int k=0;k<4;k++) {
+        int i=word*4+k; if(i>=p.width*p.height*3) break;
+        int pixel=i/3, y=pixel/p.width, x=pixel-y*p.width;
+        uint channel=uint(clamp(imageLoad(source_image,ivec2(x,y))[i%3]*255.f+0.5f,0.f,255.f));
+        value|=channel<<uint(k*8);
+    }
+    target_data[word]=value;
+}

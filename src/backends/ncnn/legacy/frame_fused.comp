@@ -76,6 +76,8 @@ afpvec4 flowPixel(int x, int y) {
 afpvec3 warpPixel(int x,int y,afpvec2 flow,bool right) {
     // Positions in fp32: fp16 spacing is 2 px above 2048, which snapped 4K samples to even pixels.
     vec2 samplexy=vec2(x,y)+vec2(flow);
+    if(any(isnan(samplexy))||any(isinf(samplexy))||any(greaterThan(abs(samplexy),vec2(1073741824.f))))
+        return afpvec3(uintBitsToFloat(0x7fc00000u));
     ivec2 a=ivec2(floor(samplexy));
     ivec2 b=clamp(a+1,ivec2(0),ivec2(p.w-1,p.h-1));
     a=clamp(a,ivec2(0),ivec2(p.w-1,p.h-1));

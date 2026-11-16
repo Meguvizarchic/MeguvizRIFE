@@ -6,6 +6,11 @@
   "target_system": "@CMAKE_SYSTEM_NAME@",
   "abi": "@ANDROID_ABI@",
   "compiler": "@CMAKE_CXX_COMPILER_ID@-@CMAKE_CXX_COMPILER_VERSION@",
-  "profile": "CPU_FP32_REFERENCE",
-  "gpu_qualification": "INCONCLUSIVE"
+  "job_observation": "@MGR_ENABLE_JOB_OBSERVATION@",
+  "shared_plan": "@MGR_SHARED_PLAN_ENABLED@",
+  "profiles": ["CPU_FP32_REFERENCE", "CPU_FP16_LEGACY", "VULKAN_LEGACY_FP16", "VULKAN_LEGACY_FP32"],
+  "catalog": "profiles.json",
+  "gpu_qualification": "INCONCLUSIVE",
+  "optimization_defaults": "disabled",
+  "weights_bundled": false
 }

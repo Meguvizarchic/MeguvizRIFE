@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "model_id": "rife-v4.6",
+  "model_manifest": "rife46.manifest.json",
+  "weights_bundled": false,
+  "distribution": "external research weights only; never copied into SDK or APK",
+  "qualification_policy": "implementation availability and host compilation do not grant GPU numerical, performance, device or bil qualification",
+  "precision_profiles": [
+    {"id": 1, "name": "CPU_FP32_REFERENCE", "provider": "NCNN_CPU", "flow_scales": [1], "input_formats": ["RGB8"], "output_storage": ["CPU"], "guards": ["nonfinite"], "qualification": "PENDING_FINAL_REVALIDATION"},
+    {"id": 4, "name": "CPU_FP16_LEGACY", "provider": "NCNN_CPU", "flow_scales": [1], "input_formats": ["RGB8"], "output_storage": ["CPU"], "guards": ["nonfinite"], "precision_policy": "restores original configure(fp16=true); actual loaded Net.opt is read back; operator precision still follows pinned ncnn CPU hardware/support policy", "qualification": "PENDING_FINAL_LEGACY_CPU_EQUIVALENCE"},
+    {"id": 2, "name": "VULKAN_LEGACY_FP16", "provider": "NCNN_VULKAN", "flow_scales": [1, 2, 4, 6, 8], "input_formats": ["RGB8", "RGBA8"], "output_storage": ["CPU_BRIDGE", "GPU_BUFFER", "RGBA8_AHB"], "guards": ["nonfinite", "static-detail", "motion-confidence", "tile-neighbour", "moving-ring", "brightness-offset-gain", "histogram"], "qualification": "PENDING_FINAL_DEVICE_ORACLE"},
+    {"id": 3, "name": "VULKAN_LEGACY_FP32", "provider": "NCNN_VULKAN", "flow_scales": [1, 2, 4, 6, 8], "input_formats": ["RGB8", "RGBA8"], "output_storage": ["CPU_BRIDGE", "GPU_BUFFER", "RGBA8_AHB"], "guards": ["nonfinite", "static-detail", "motion-confidence", "tile-neighbour", "moving-ring", "brightness-offset-gain", "histogram"], "qualification": "PENDING_FINAL_DEVICE_ORACLE"}
+  ],
+  "execution_flags": [
+    {"bit": 1, "name": "ADAPTIVE_FLOW", "base_scale": 4, "request_scales": [4, 6, 8], "automatic_scale_8_above_pixels": 2073600},
+    {"bit": 2, "name": "DYNAMIC_SHAPE", "max_dimension": 4096, "max_pixels": 8847360, "requires_explicit_max_pixels": true, "reload_per_shape": false},
+    {"bit": 4, "name": "SEPARATE_WARP", "default": false},
+    {"bit": 8, "name": "RAW_GPU_INPUT", "default": false, "numerical_profile": "legacy explicit experiment"},
+    {"bit": 16, "name": "GPU_IO_DISABLED", "default": false, "input_output": "CPU RGB8 only", "synchronization": "legacy synchronous Vulkan compatibility recording"}
+  ],
+  "optimizations": [
+    {"bit": 1, "name": "PRUNE_UNUSED_TAIL", "default": false, "implementation": "327/332 ancestor graph, original weighted layer order and weight stream retained", "qualification": "PENDING_FINAL_EQUIVALENCE"},
+    {"bit": 2, "name": "DIRECT_REDUCED_INPUT", "default": false, "implementation": "FP32 sample coordinates and interpolation arithmetic, explicit original source FP16 storage rounding, full-resolution history retained", "qualification": "PENDING_FINAL_EQUIVALENCE"},
+    {"bit": 4, "name": "FUSE_ADD_LEAKY", "default": false, "implementation": "single-consumer equal-shape residual Add plus LeakyReLU; pack1/4 and explicit intermediate storage rounding", "qualification": "PENDING_FINAL_LAYER_AND_FRAME_ORACLE"}
+  ],
+  "gpu_guard_readback": {"input_summary_words": 391, "output_flags_words": 146, "final_output_written_after_host_policy": true, "full_frame_download_for_gpu_output": false},
+  "owned_output_pool": {"default_capacity": 4, "capacity_range": [1, 16], "storages": ["CPU", "GPU_BUFFER", "RGBA8_AHB"], "full_behavior": "mgr_submit returns BACKPRESSURE before accepting input references", "reuse_authority": "exclusive WRITE lease; consumer-held READ leases prevent reuse", "content_identity": "monotonic per-plan content ID; shape/stride/format/usage/domain generation/sync mode keyed", "gpu_buffer_capacity": "round-up4 bytes; visible geometry and stride unchanged", "plan_close": "drop pool owners only; consumer output retains Compute resources"},
+  "cpu_gpu_bridge_cache": {"input_slots": 3, "input_storage": "immutable READ GPU buffers", "key": "full original CPU lease identity/shape/stride plus immutable plan", "upload": "miss only; identical left/right share a pending upload", "eviction": "current call pinned; exclusive WRITE required before replacement", "gpu_output_scratch_slots": 1, "cpu_staging": "borrow aligned valid CPU span or reuse slot padding scratch; reuse output download Mat", "full_frame_hash": false, "qualification": "PENDING_FINAL_CACHE_UPLOAD_AND_LIFETIME_VALIDATION"},
+  "synchronization": {"host_wait": true, "final_submit_async": false, "full_record_async": false, "ahb_sync_fd": "requires Compute capability; no silent CPU fallback"},
+  "offline_shaderpack": {"optional": true, "contract": "shader-contract.json", "owner_kernel_count": 9, "default_runtime_compiler": true, "no_runtime_profile": false, "explicit_binding_failure": "reject", "absent_binding": "record miss before runtime compatibility fallback", "qualification": "PENDING_FINAL_TARGET_CAPTURE_AND_DEVICE_VALIDATION"},
+  "unsupported_profiles": ["HDR/P010", "protected content", "arbitrary RIFE model", "arbitrary external VkDevice", "caller-provided output write target", "geometry precision change", "Practical-RIFE lite", "second inference backend"]
+}

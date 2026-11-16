@@ -35,6 +35,11 @@ void main()
 
     afp sample_x = afp(gx) + flow_x;
     afp sample_y = afp(gy) + flow_y;
+    if(isnan(float(sample_x))||isinf(float(sample_x))||isnan(float(sample_y))||isinf(float(sample_y))||
+       abs(float(sample_x))>1073741824.f||abs(float(sample_y))>1073741824.f) {
+        buffer_st1(top_blob_data,gz*p.cstep+gy*p.w+gx,afp(uintBitsToFloat(0x7fc00000u)));
+        return;
+    }
 
     // bilinear interpolate
     afp v;

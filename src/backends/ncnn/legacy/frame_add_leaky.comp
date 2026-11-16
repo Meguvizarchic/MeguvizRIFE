@@ -1,0 +1,39 @@
+#version 450
+#if NCNN_fp16_storage
+#extension GL_EXT_shader_16bit_storage: require
+#endif
+#if NCNN_fp16_arithmetic
+#extension GL_EXT_shader_explicit_arithmetic_types_float16: require
+#endif
+#if MGR_PACK4
+layout(binding=0) readonly buffer left_blob { sfpvec4 left_data[]; };
+layout(binding=1) readonly buffer right_blob { sfpvec4 right_data[]; };
+layout(binding=2) writeonly buffer target_blob { sfpvec4 target_data[]; };
+#else
+layout(binding=0) readonly buffer left_blob { sfp left_data[]; };
+layout(binding=1) readonly buffer right_blob { sfp right_data[]; };
+layout(binding=2) writeonly buffer target_blob { sfp target_data[]; };
+#endif
+layout(push_constant) uniform parameter { int count; float slope; } p;
+void main() {
+    int i=int(gl_GlobalInvocationID.x);if(i>=p.count)return;
+#if MGR_PACK4
+    // The explicit storage cast retains BinaryOp's intermediate FP16 rounding
+    // before the separate LeakyReLU arithmetic and its final storage rounding.
+    afpvec4 sum=buffer_ld4(left_data,i)+buffer_ld4(right_data,i);
+#if NCNN_fp16_storage
+    sum=afpvec4(f16vec4(sum));
+#elif NCNN_fp16_packed
+    sum=afpvec4(unpackHalf2x16(packHalf2x16(vec2(sum.xy))),unpackHalf2x16(packHalf2x16(vec2(sum.zw))));
+#endif
+    buffer_st4(target_data,i,mix(sum,sum*afp(p.slope),lessThan(sum,afpvec4(0.f))));
+#else
+    afp sum=buffer_ld1(left_data,i)+buffer_ld1(right_data,i);
+#if NCNN_fp16_storage
+    sum=afp(float16_t(sum));
+#elif NCNN_fp16_packed
+    sum=afp(unpackHalf2x16(packHalf2x16(vec2(float(sum),0.f))).x);
+#endif
+    buffer_st1(target_data,i,sum<afp(0.f)?sum*afp(p.slope):sum);
+#endif
+}
