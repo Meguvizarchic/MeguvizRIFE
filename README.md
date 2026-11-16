@@ -32,12 +32,15 @@ ARMv7 可以在独立构建目录显式传 `ANDROID_ABI=armeabi-v7a`。交叉构
 
 ```sh
 mgr-cli inspect-model
+mgr-cli inspect-model --manifest models/catalog/rife46.manifest.json
 mgr-cli --version-json
 mgr-cli interpolate --run-spec pair.json --report result.json
 python tests/run_reference.py --binary build/host-reference/mgr-cli --oracle build/host-reference/mgr-legacy-oracle --model-dir /approved/rife-v4.6 --out artifacts/R1/reference
 ```
 
 `pair.json` 使用 `schema_version:1`、`model_directory`、P6 RGB8 `left/right` 文件、字符串 `alpha`、`output` 路径和 `precision_profile:"CPU_FP32_REFERENCE"`。
+`inspect-model --manifest` 只校验指定清单与内置模型契约一致，不读取图和权重。CLI 排他创建输出图像与报告，重复执行时请指定新路径。失败时会在路径可安全创建的情况下写入 JSON 报告。
+
 示例数据可由 `tests/run_reference.py` 确定性生成。报告将端点与成功推理分开，并明确 CPU reference 不能作为原 GPU 缩流配置的等价 oracle。
 
 ## 证据与状态

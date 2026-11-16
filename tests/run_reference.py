@@ -78,8 +78,12 @@ for w, h in ((32, 32), (65, 35)):
         else:
             assert measured["frame_kind"] == 1 and raw not in (a, b)
             # A/A is a distinct process and must reproduce the complete bytes.
-            run(label + "-repeat", [args.binary, "interpolate", "--run-spec", spec_path, "--report", report])
-            assert Path(spec["output"]).read_bytes() == output
+            repeat_spec = dict(spec, output=str(folder / f"candidate-{alpha}-repeat.ppm"))
+            repeat_path = folder / f"case-{alpha}-repeat.json"
+            repeat_path.write_text(json.dumps(repeat_spec), encoding="utf-8")
+            run(label + "-repeat", [args.binary, "interpolate", "--run-spec", repeat_path,
+                                    "--report", folder / f"report-{alpha}-repeat.json"])
+            assert Path(repeat_spec["output"]).read_bytes() == output
         checks.append({"case": label, "result": "PASS", "output_sha256": digest(output),
                        "pixel_sha256": digest(raw), "oracle_pixel_sha256": digest(expected)})
 

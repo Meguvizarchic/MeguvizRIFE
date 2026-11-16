@@ -8,10 +8,46 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 using namespace mgr_detail;
 namespace fs = std::filesystem;
 namespace {
+fs::path output_path(const std::string& value) {
+    require(!value.empty()&&value.find('\0')==std::string::npos,4,"invalid_output_path");
+    return fs::u8path(value);
+}
+bool exists_no_follow(const fs::path& path) {
+    std::error_code ec;const auto status=fs::symlink_status(path,ec);
+    require(!ec||ec==std::errc::no_such_file_or_directory,9,"output_path_status_failed");
+    return fs::exists(status)||fs::is_symlink(status);
+}
+bool path_component_equal(const fs::path& a,const fs::path& b) {
+#ifdef _WIN32
+    const auto x=a.native(),y=b.native();
+    return CompareStringOrdinal(x.c_str(),int(x.size()),y.c_str(),int(y.size()),TRUE)==CSTR_EQUAL;
+#else
+    return a==b;
+#endif
+}
+fs::path normalized(const fs::path& path) {
+    std::error_code ec;const auto absolute=fs::absolute(path,ec);require(!ec,9,"output_path_resolution_failed");
+    const auto result=fs::weakly_canonical(absolute,ec);require(!ec,9,"output_path_resolution_failed");return result.lexically_normal();
+}
+bool contains_path(const fs::path& parent,const fs::path& candidate) {
+    const auto root=normalized(parent),target=normalized(candidate);auto a=root.begin(),b=target.begin();
+    for(;a!=root.end();++a,++b)if(b==target.end()||!path_component_equal(*a,*b))return false;
+    return true;
+}
+bool same_path(const fs::path& a,const fs::path& b) {
+    std::error_code ec;if(fs::equivalent(a,b,ec)&&!ec)return true;
+    return contains_path(a,b)&&contains_path(b,a);
+}
 void check(MgcStatus s, const char* phase) { require(s == MGC_SUCCESS, 9, std::string(phase) + ":" + std::to_string(s)); }
 MgcHash digest(const std::string& s) {
     require(valid_hash(s), 4, "invalid_sha256"); MgcHash h{};
@@ -129,23 +165,61 @@ J interpolate(const J& spec) {
 }
 }
 int main(int argc,char** argv) {
-    std::string report;
+    std::string report;bool reportReady=false;
     try {
-        require(argc>=2,2,"usage: mgr-cli inspect-model | interpolate --run-spec FILE --report FILE");
-        const std::string command=argv[1];std::string runSpec;
+        require(argc>=2,2,"usage: mgr-cli inspect-model [--manifest FILE] | interpolate --run-spec FILE --report FILE");
+        const std::string command=argv[1];std::string runSpec,manifestPath;
         for(int i=2;i<argc;i+=2){require(i+1<argc,2,"missing_argument");std::string key=argv[i];
             if(key=="--run-spec") {require(runSpec.empty(),2,"duplicate_run_spec");runSpec=argv[i+1];}
             else if(key=="--report") {require(report.empty(),2,"duplicate_report");report=argv[i+1];}
+            else if(key=="--manifest") {require(manifestPath.empty()&&argv[i+1][0],2,"duplicate_or_empty_manifest");manifestPath=argv[i+1];}
             else throw Error(2,"unknown_argument");}
+        require(manifestPath.empty()||command=="inspect-model",2,"manifest_only_for_inspect_model");
+        if(!report.empty()) {
+            const auto target=output_path(report);
+            require(!exists_no_follow(target),9,"report_already_exists");
+            reportReady=true;
+        }
+        auto protectInput=[&](const fs::path& input) {
+            if(reportReady&&same_path(input,output_path(report))) {reportReady=false;throw Error(4,"report_equals_input");}
+        };
+        if(!runSpec.empty())protectInput(output_path(runSpec));
+        if(!manifestPath.empty())protectInput(output_path(manifestPath));
+        auto protectSpecInputs=[&](const J& spec) {
+            for(const auto* key:{"left","right"})
+                if(spec.has(key)&&!spec.at(key).str().empty())protectInput(output_path(spec.at(key).str()));
+            if(spec.has("model_directory")&&!spec.at("model_directory").str().empty()) {
+                const auto dir=output_path(spec.at("model_directory").str());
+                protectInput(dir/"flownet.param");protectInput(dir/"flownet.bin");
+            }
+        };
         J output;
-        if(command=="inspect-model") output=Parser(meguviz::rife::catalog_manifest).parse();
-        else if(command=="interpolate") {require(!runSpec.empty(),2,"run_spec_required");output=interpolate(load(fs::u8path(runSpec)));}
+        if(command=="inspect-model") {
+            output=Parser(meguviz::rife::catalog_manifest).parse();
+            if(!manifestPath.empty()) {
+                // Apply the same canonical semantic identity check and size
+                // limit as mgr_model_create; this inspects metadata only.
+                const auto actual=Parser(read(fs::u8path(manifestPath),65536)).parse();
+                require(dump(actual)==dump(output),4,"manifest_model_mismatch");
+            }
+        }
+        else if(command=="interpolate") {
+            require(!runSpec.empty(),2,"run_spec_required");const auto spec=load(fs::u8path(runSpec));
+            protectSpecInputs(spec);
+            const auto target=output_path(spec.at("output").str());
+            if(reportReady&&same_path(target,output_path(report))) {reportReady=false;throw Error(4,"report_equals_output");}
+            require(!exists_no_follow(target),9,"output_already_exists");output=interpolate(spec);
+        }
         else if(command=="--version-json") output=J::O{{"version","0.1.0-dev"},{"scope","CPU reference implementation"},{"build_fingerprint",meguviz::rife::build_fingerprint},{"private_sdk_fingerprint",meguviz::private_sdk_fingerprint()}};
         else throw Error(3,"unsupported_command");
-        if(!report.empty())write(fs::u8path(report),dump(output)+"\n");std::cout<<dump(output)<<'\n';return 0;
+        if(reportReady)write(output_path(report),dump(output)+"\n");std::cout<<dump(output)<<'\n';return 0;
     } catch(const Error& e) {
         J failure=J::O{{"result","FAIL"},{"cause",e.what()},{"exit_code",e.code}};
-        if(!report.empty())try{write(fs::u8path(report),dump(failure)+"\n");}catch(...){}
+        if(reportReady)try{write(output_path(report),dump(failure)+"\n");}catch(...){}
         std::cerr<<dump(failure)<<'\n';return e.code;
-    } catch(const std::exception& e) {std::cerr<<"{\"result\":\"FAIL\",\"cause\":\"invalid_input_or_internal_error\"}\n";return 12;}
+    } catch(const std::exception&) {
+        J failure=J::O{{"result","FAIL"},{"cause","invalid_input_or_internal_error"},{"exit_code",12}};
+        if(reportReady)try{write(output_path(report),dump(failure)+"\n");}catch(...){}
+        std::cerr<<dump(failure)<<'\n';return 12;
+    }
 }

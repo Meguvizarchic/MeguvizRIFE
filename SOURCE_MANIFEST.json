@@ -63,8 +63,8 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 3141,
-      "sha256": "d5187d0aa4701d59fdb84c476085452684c29ed83c6b4e70d55728a018827593"
+      "size_bytes": 3542,
+      "sha256": "1acdbd51191c9c37e31d1afd63e214ad5d9c7250df6cf8a44424b25ffd22dbc6"
     },
     {
       "path": "src/backends/ncnn/legacy/embed_shader.cmake",
@@ -138,8 +138,8 @@
     },
     {
       "path": "src/cli/main.cpp",
-      "size_bytes": 11179,
-      "sha256": "27fc01a7b3c56d32db023a663566c5f6ad30a3b7eb2a2e74a37de10a01daf6ab"
+      "size_bytes": 14905,
+      "sha256": "bdf80a38ff6dcef304ad146da2a75a32acc21d3942213b0b5cd8bd1503b3e1c3"
     },
     {
       "path": "src/core/rife.cpp",
@@ -153,8 +153,8 @@
     },
     {
       "path": "src/private/data.hpp",
-      "size_bytes": 10275,
-      "sha256": "3d1358a26a1aaa3127008715314afbc752466ad384798baa5250f8befd8edc65"
+      "size_bytes": 11633,
+      "sha256": "bfee0fde9abab347426fd9a3eb171a43534b6c6d1d3a60f0ab1a334bfeb8923e"
     },
     {
       "path": "tests/c_consumer.c",
@@ -197,9 +197,19 @@
       "sha256": "5d28e4d5179d1f809739fff759c33a7ad0b82de75f752f80f1242c2606b0d47a"
     },
     {
+      "path": "tests/inspect_model_cli.py",
+      "size_bytes": 3219,
+      "sha256": "48697b9a9ca32132069b468a5b8a724f1ac61fe0975e4547cb37bb3eab0cee5a"
+    },
+    {
+      "path": "tests/no_overwrite_cli.py",
+      "size_bytes": 6609,
+      "sha256": "9e5d49d0723378f162d0b7049d69340ce9dad6d9cd6b413407bbcfc8b5848d46"
+    },
+    {
       "path": "tests/run_reference.py",
-      "size_bytes": 5818,
-      "sha256": "4db893c3aa8a532f128d92b5cb03b0d419bb727f2a1d1ae9bb281ccf7a9322ea"
+      "size_bytes": 6127,
+      "sha256": "94f03cc32a28cd9079638c35090a6af24b7a5f220f3a798699ecedeb862686fa"
     },
     {
       "path": ".gitattributes",
