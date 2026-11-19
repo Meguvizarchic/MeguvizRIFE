@@ -1,0 +1,42 @@
+#version 450
+layout(binding=0) readonly buffer left_blob { uint left_data[]; };
+layout(binding=1) readonly buffer right_blob { uint right_data[]; };
+layout(binding=2) buffer summary_blob { uint summary_data[]; };
+layout(push_constant) uniform parameter { int width; int height; int stepX; int stepY; int sampleW; int sampleH; } p;
+
+const uint SummaryWords = 391u;
+shared uint local_summary[SummaryWords];
+
+uint byteAt(bool right,int i) { return ((right?right_data[i>>2]:left_data[i>>2])>>uint((i&3)*8))&255u; }
+
+void main() {
+    uint lane=gl_LocalInvocationIndex;
+    uint lanes=gl_WorkGroupSize.x*gl_WorkGroupSize.y*gl_WorkGroupSize.z;
+    for(uint i=lane;i<SummaryWords;i+=lanes) local_summary[i]=0u;
+    barrier();
+
+    int sx=int(gl_GlobalInvocationID.x),sy=int(gl_GlobalInvocationID.y);
+    if(sx<p.sampleW&&sy<p.sampleH) {
+        int x=sx*p.stepX,y=sy*p.stepY;
+        int tile=(y*9/p.height)*16+x*16/p.width;
+        uint diff=0u;
+        for(int c=0;c<3;c++) {
+            int i=(y*p.width+x)*3+c;
+            uint a=byteAt(false,i),b=byteAt(true,i);
+            atomicAdd(local_summary[c],a);
+            atomicAdd(local_summary[3+c],b);
+            diff+=uint(abs(int(a)-int(b)));
+            atomicAdd(local_summary[295+c*16+int(a>>4)],1u);
+            atomicAdd(local_summary[343+c*16+int(b>>4)],1u);
+        }
+        atomicAdd(local_summary[6],1u);
+        atomicAdd(local_summary[7+tile],diff);
+        atomicAdd(local_summary[151+tile],3u);
+    }
+    barrier();
+
+    for(uint i=lane;i<SummaryWords;i+=lanes) {
+        uint value=local_summary[i];
+        if(value!=0u) atomicAdd(summary_data[i],value);
+    }
+}

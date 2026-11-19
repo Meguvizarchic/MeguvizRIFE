@@ -22,6 +22,9 @@
 #include "frame_gpu_unpack.comp.hex.h"
 #include "frame_gpu_image_read.comp.hex.h"
 #include "frame_gpu_statistics.comp.hex.h"
+#if defined(MGR_ENABLE_GROUPED_STATISTICS)
+#include "frame_gpu_statistics_grouped.comp.hex.h"
+#endif
 #include "frame_gpu_patch.comp.hex.h"
 #include "frame_gpu_image_write.comp.hex.h"
 #include <pipeline.h>
@@ -936,10 +939,19 @@ Status Engine::loadOwned(ModelView model) noexcept {
                     source.x,source.y,source.z,source.bindings,source.pushCount,*source.slot);
                 if(status!=MGC_SUCCESS)return pipelineStatus(status);
             }
+            const char* statisticsData = frame_gpu_statistics_comp_data;
+            int statisticsSize = sizeof(frame_gpu_statistics_comp_data) - 1;
+#if defined(MGR_ENABLE_GROUPED_STATISTICS)
+            // Keep the original source identity for the external ShaderTools statistics kernel.
+            if (!impl_->options.shaderpack) {
+                statisticsData = frame_gpu_statistics_grouped_comp_data;
+                statisticsSize = sizeof(frame_gpu_statistics_grouped_comp_data) - 1;
+            }
+#endif
             const Source gpuSources[] = {
                 {frame_gpu_unpack_comp_data,sizeof(frame_gpu_unpack_comp_data)-1,&impl_->gpuUnpack,64,1,1,MGR_SHADER_GPU_UNPACK,"rife/gpu-unpack",{1,1},6},
                 {frame_gpu_image_read_comp_data,sizeof(frame_gpu_image_read_comp_data)-1,&impl_->gpuImageRead,64,1,1,MGR_SHADER_GPU_IMAGE_READ,"rife/gpu-image-read",{2,1},3},
-                {frame_gpu_statistics_comp_data,sizeof(frame_gpu_statistics_comp_data)-1,&impl_->gpuStatistics,8,8,1,MGR_SHADER_GPU_STATISTICS,"rife/gpu-statistics",{1,1,1},6},
+                {statisticsData,statisticsSize,&impl_->gpuStatistics,8,8,1,MGR_SHADER_GPU_STATISTICS,"rife/gpu-statistics",{1,1,1},6},
                 {frame_gpu_patch_comp_data,sizeof(frame_gpu_patch_comp_data)-1,&impl_->gpuPatch,64,1,1,MGR_SHADER_GPU_PATCH,"rife/gpu-patch",{1,1,1,1},7},
                 {frame_gpu_image_write_comp_data,sizeof(frame_gpu_image_write_comp_data)-1,&impl_->gpuImageWrite,8,8,1,MGR_SHADER_GPU_IMAGE_WRITE,"rife/gpu-image-write",{1,1,1,2},3}};
             for (const auto& source : gpuSources) {
