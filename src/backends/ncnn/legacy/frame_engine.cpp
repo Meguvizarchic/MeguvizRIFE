@@ -196,6 +196,30 @@ ncnn::Mat inputTensor(ImageView image, int paddedWidth, int paddedHeight) {
 // 末段与 flownet.param 的 warp_6/warp_7/mul_76/mul_77/add_78 同构：blob 327 为 4 通道光流，332 为遮罩。
 // 运动置信度分块：与 frame_fused*.comp 的 GUARD_TILES_X/Y 一致。
 constexpr int GuardTilesX = 16, GuardTilesY = 9, GuardTiles = GuardTilesX * GuardTilesY;
+#if NCNN_VULKAN
+struct GuardSampleCounts {
+    int width = 0, height = 0;
+    int64_t total = 0;
+    std::array<int64_t, GuardTiles> tiles{};
+
+    void update(int frameWidth, int frameHeight) noexcept {
+        if (width == frameWidth && height == frameHeight) return;
+        width = frameWidth;
+        height = frameHeight;
+        total = 0;
+        tiles.fill(0);
+        // Each shader invocation covers four pixels. Every eighth invocation
+        // attributes its whole group to the tile containing the first pixel.
+        const int64_t pixels = int64_t(width) * height;
+        for (int64_t first = 0; first < pixels; first += 32) {
+            const int64_t y = first / width, x = first - y * width;
+            const int64_t count = std::min<int64_t>(4, pixels - first);
+            tiles[size_t((y * GuardTilesY / height) * GuardTilesX + x * GuardTilesX / width)] += count;
+            total += count;
+        }
+    }
+};
+#endif
 // 分块不可靠像素千分比：达到前者直接换成最近原帧；达到后者且与已换分块相邻时一并替换。
 constexpr int TilePatchPermille = 300, TileNeighbourPermille = 50;
 
@@ -494,6 +518,7 @@ public:
     struct GpuLeaseFrame { int64_t id = -1; int width=0,height=0,scale=0; ncnn::VkMat raw,full,reduced; };
     GpuLeaseFrame leaseFrames[3];
     int nextLeaseFrame = 0;
+    GuardSampleCounts guardSampleCounts; // Accessed under the inference mutex.
 #endif
 
     void releaseNets() noexcept {

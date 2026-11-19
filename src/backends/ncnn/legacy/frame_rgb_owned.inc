@@ -297,18 +297,11 @@ Status Engine::processRgb8GpuOwned(ImageView inputLeft,ImageView inputRight,doub
                         return {Code::InvalidOutput};
                     std::array<bool, GuardTiles> patch{};
                     if (impl_->fusedWarp && w.motionGuard) {
-                        // 抽样：每 8 组（每组 4 像素）计一组，按组首像素归入分块，与着色器一致。
                         const auto* counts = static_cast<const std::uint32_t*>(flagged.data);
-                        std::array<std::int64_t, GuardTiles> sampledTiles{};
-                        const std::int64_t pixels = static_cast<std::int64_t>(left.width) * left.height;
-                        std::int64_t sampled = 0;
-                        for (std::int64_t first = 0; first < pixels; first += 32) {
-                            const std::int64_t ty = first / left.width, tx = first - ty * left.width;
-                            const auto n = std::min<std::int64_t>(4, pixels - first);
-                            sampledTiles[static_cast<std::size_t>((ty * GuardTilesY / left.height) * GuardTilesX + tx * GuardTilesX / left.width)] += n;
-                            sampled += n;
-                        }
-                        impl_->unreliablePermille.store(static_cast<int>(std::min<std::int64_t>(1000, counts[1] * 1000 / std::max<std::int64_t>(1, sampled))));
+                        auto& samples = impl_->guardSampleCounts;
+                        samples.update(left.width, left.height);
+                        const auto& sampledTiles = samples.tiles;
+                        impl_->unreliablePermille.store(static_cast<int>(std::min<std::int64_t>(1000, counts[1] * 1000 / std::max<std::int64_t>(1, samples.total))));
                         // 局部转场（画中画、分屏切换、局部字幕卡）：多数像素不可靠的分块换成最近原帧；
                         // 与之相邻、也有相当比例不可靠的分块一并替换，避免接缝处残留拉扯。
                         std::array<int, GuardTiles> permille{};

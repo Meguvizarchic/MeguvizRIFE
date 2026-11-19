@@ -232,13 +232,10 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
             if(w.flagsHost.empty()||static_cast<const uint32_t*>(w.flagsHost.data)[0])return MGC_MODEL_MISMATCH;
             if(impl_->fusedWarp&&w.motionGuard) {
                 const auto* flags=static_cast<const uint32_t*>(w.flagsHost.data);
-                std::array<int64_t,GuardTiles> sampledTiles{};int64_t sampled=0;
-                const int64_t pixels=int64_t(w.width)*w.height;
-                for(int64_t first=0;first<pixels;first+=32) {
-                    const int64_t y=first/w.width,x=first-y*w.width,n=std::min<int64_t>(4,pixels-first);
-                    sampledTiles[size_t((y*GuardTilesY/w.height)*GuardTilesX+x*GuardTilesX/w.width)]+=n;sampled+=n;
-                }
-                impl_->unreliablePermille.store(int(std::min<int64_t>(1000,int64_t(flags[1])*1000/std::max<int64_t>(1,sampled))));
+                auto& samples=impl_->guardSampleCounts;
+                samples.update(w.width,w.height);
+                const auto& sampledTiles=samples.tiles;
+                impl_->unreliablePermille.store(int(std::min<int64_t>(1000,int64_t(flags[1])*1000/std::max<int64_t>(1,samples.total))));
                 std::array<int,GuardTiles> permille{};
                 for(int t=0;t<GuardTiles;t++){permille[t]=sampledTiles[t]?int(int64_t(flags[2+t])*1000/sampledTiles[t]):0;w.patchMask[t]=permille[t]>=TilePatchPermille;}
                 const auto core=w.patchMask;
