@@ -15,6 +15,9 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
             MGR_OBSERVE_JOB(JobObservation observation{};JobObservation* diagnostic=&observation;)
             int width=0,height=0,scale=0,pw=0,ph=0,words=0;
             int64_t ids[2]; float alpha;
+            int inputView[2]{};
+            uint32_t inputViewCount=0;
+            bool ahbInputs=false;
             bool endpoint=false;
             ncnn::VkMat raw[2],full[2],reduced[2],summary,flow,mask,merged,planar,packed,flags,patch;
             ncnn::Mat summaryHost,flagsHost,patchHost,time;
@@ -61,6 +64,11 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
         if(w.endpoint){w.diagnostic->staticGuard=GuardObservation::NotApplicable;w.diagnostic->motionGuard=GuardObservation::NotApplicable;})
         MgcLeaseInfo info{}; info.header=MGC_HEADER_INIT(MgcLeaseInfo);
         status=mgc_lease_info(left,&info); if(status!=MGC_SUCCESS) return status;
+#if defined(__ANDROID__)
+        AHardwareBuffer *leftBuffer=nullptr,*rightBuffer=nullptr;
+        w.ahbInputs=mgc_android_get_buffer(left,&leftBuffer)==MGC_SUCCESS&&leftBuffer&&
+            mgc_android_get_buffer(right,&rightBuffer)==MGC_SUCCESS&&rightBuffer;
+#endif
         w.width=int(info.width); w.height=int(info.height);
         if(w.width<=0||w.height<=0||w.width>MaxDimension||w.height>MaxDimension||
             uint64_t(w.width)*w.height>impl_->options.maxPixels) return MGC_INVALID_ARGUMENT;
@@ -79,21 +87,38 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
         }
         MgcLease* inputs[]={left,right};
         if(w.stage==0) {
+        // The Compute ticket still pins both inputs and verifies their producers.
+        // Cached tensors own separate memory, so a hit needs no AHB transition.
+        MgcLease* views[2]{};
+        w.inputViewCount=0;
+        for(int i=0;i<2;i++) {
+            const Impl::GpuLeaseFrame* hit=nullptr;
+            for(const auto& frame:impl_->leaseFrames)
+                if(w.ids[i]>=0&&frame.id==w.ids[i]&&frame.width==w.width&&frame.height==w.height&&frame.scale==w.scale) hit=&frame;
+            if(hit) {
+                w.raw[i]=hit->raw;w.full[i]=hit->full;w.reduced[i]=hit->reduced;
+            }
+            w.inputView[i]=-1;
+            // Keep the existing storage validation for CPU bridge and generic GPU callers.
+            if(!hit||!w.ahbInputs) {
+                w.inputView[i]=int(w.inputViewCount);
+                views[w.inputViewCount++]=inputs[i];
+            }
+        }
         w.stage=1;w.callbackEntered=false;
         lock.unlock();
-        status=meguviz::with_ncnn_gpu_owned(domain,inputs,2,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
+        status=meguviz::with_ncnn_gpu_owned(domain,views,w.inputViewCount,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
             auto& v=*static_cast<Work*>(context);std::lock_guard<std::mutex> guard(v.engine->mutex);
             if(v.engine->activeInference!=&v)return MGC_BUSY;
             v.callbackEntered=true; auto& e=*v.engine; auto& cmd=*scope.command; const auto& opt=e.network->opt;
-            if(scope.view_count!=2||scope.device!=e.device) return MGC_INCOMPATIBLE_DOMAIN;
+            if(scope.view_count!=v.inputViewCount||scope.device!=e.device) return MGC_INCOMPATIBLE_DOMAIN;
             for(int i=0;i<2;i++) {
-                const auto& source=scope.views[i];
-                if(source.info.width!=uint32_t(v.width)||source.info.height!=uint32_t(v.height)||
-                    !(source.info.access&MGC_ACCESS_READ)) return MGC_INVALID_ARGUMENT;
-                const Impl::GpuLeaseFrame* hit=nullptr;
-                for(const auto& frame:e.leaseFrames)
-                    if(v.ids[i]>=0&&frame.id==v.ids[i]&&frame.width==v.width&&frame.height==v.height&&frame.scale==v.scale) hit=&frame;
-                if(hit) {MGR_OBSERVE_JOB(v.diagnostic->tensorCache[i]=CacheObservation::Hit;)v.raw[i]=hit->raw;v.full[i]=hit->full;v.reduced[i]=hit->reduced;continue;}
+                const auto* sourceView=v.inputView[i]<0?nullptr:&scope.views[v.inputView[i]];
+                if(sourceView&&(sourceView->info.width!=uint32_t(v.width)||sourceView->info.height!=uint32_t(v.height)||
+                    !(sourceView->info.access&MGC_ACCESS_READ))) return MGC_INVALID_ARGUMENT;
+                if(!v.raw[i].empty()) {MGR_OBSERVE_JOB(v.diagnostic->tensorCache[i]=CacheObservation::Hit;)continue;}
+                if(!sourceView) return MGC_INTERNAL_ERROR;
+                const auto& source=*sourceView;
                 MGR_OBSERVE_JOB(v.diagnostic->tensorCache[i]=v.ids[i]<0?CacheObservation::Disabled:CacheObservation::Miss;)
                 v.raw[i].create(v.words,size_t(4u),1,e.blobAllocator);
                 if(v.raw[i].empty()) return MGC_OUT_OF_MEMORY;
@@ -174,7 +199,7 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
         if(w.stage==2) {
             w.stage=3;w.callbackEntered=false;
             lock.unlock();
-        status=meguviz::with_ncnn_gpu_owned(domain,inputs,2,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
+        status=meguviz::with_ncnn_gpu_owned(domain,w.ahbInputs?nullptr:inputs,w.ahbInputs?0u:2u,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
                 auto& v=*static_cast<Work*>(context);std::lock_guard<std::mutex> guard(v.engine->mutex);
                 if(v.engine->activeInference!=&v)return MGC_BUSY;
                 v.callbackEntered=true;auto& e=*v.engine;auto& cmd=*scope.command;const auto& opt=e.network->opt;
@@ -267,10 +292,10 @@ MgcStatus Engine::processGpu(MgcDomain* domain, MgcLease* left, MgcLease* right,
         MgcLease* finalLeases[]={left,right,output};
         w.stage=5;w.callbackEntered=false;
         lock.unlock();
-        status=meguviz::with_ncnn_gpu_owned(domain,finalLeases,3,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
+        status=meguviz::with_ncnn_gpu_owned(domain,w.ahbInputs?&output:finalLeases,w.ahbInputs?1u:3u,state,[](void* context,meguviz::NcnnGpuScope& scope)->MgcStatus {
             auto& v=*static_cast<Work*>(context);std::lock_guard<std::mutex> guard(v.engine->mutex);
                 if(v.engine->activeInference!=&v)return MGC_BUSY;
-                v.callbackEntered=true;auto& e=*v.engine;auto& cmd=*scope.command;const auto& target=scope.views[2];
+                v.callbackEntered=true;auto& e=*v.engine;auto& cmd=*scope.command;const auto& target=scope.views[v.ahbInputs?0:2];
             if(target.info.width!=uint32_t(v.width)||target.info.height!=uint32_t(v.height)||!(target.info.access&MGC_ACCESS_WRITE))return MGC_INVALID_ARGUMENT;
             cmd.record_clone(v.patchHost,v.patch,e.network->opt);
             if(v.patch.empty())return MGC_OUT_OF_MEMORY;

@@ -11,6 +11,9 @@
 #include "private/alpha.hpp"
 #include <meguviz/backend_ncnn_sdk.hpp>
 #if NCNN_VULKAN
+#if defined(__ANDROID__)
+#include <meguviz/compute_android.h>
+#endif
 #include "frame_preproc.comp.hex.h"
 #include "frame_postproc.comp.hex.h"
 #include "frame_fused.comp.hex.h"
@@ -559,6 +562,15 @@ public:
 #if NCNN_VULKAN
         if (options.backend == Backend::Vulkan) {
             net.set_vulkan_device(options.domainDevice);
+#if defined(__ANDROID__)
+            if (options.domainDevice) {
+                const auto& gpu = options.domainDevice->info;
+                // This Adreno 840 driver stalls in convolution_gemm_cm pipeline creation.
+                if (gpu.vendor_id() == 0x5143 && gpu.device_id() == 0x44050a31 &&
+                    gpu.driver_version() == 0x8034a034)
+                    net.opt.use_cooperative_matrix = false;
+            }
+#endif
             net.opt.blob_vkallocator = blobAllocator;
             net.opt.workspace_vkallocator = blobAllocator;
             net.opt.staging_vkallocator = stagingAllocator;
