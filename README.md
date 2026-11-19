@@ -1,6 +1,35 @@
-<p><img src="docs/brand/MeguvizRIFE.svg" width="96" alt="MeguvizRIFE 图标"></p>
+<div align="center">
+
+<img src="docs/brand/MeguvizRIFE.svg" width="96" height="96" alt="MeguvizRIFE">
 
 # MeguvizRIFE
+
+**独立 RIFE 插帧算法库**
+
+v4.6 CPU FP32 reference · Vulkan plan · C ABI
+
+<br>
+
+[![License](https://img.shields.io/badge/license-GPL--3.0-00AEEC?style=flat-square&labelColor=2d3a55)](LICENSE)
+[![Language](https://img.shields.io/badge/lang-C%2B%2B-DEA584?style=flat-square&labelColor=2d3a55)](https://github.com/Meguvizarchic/MeguvizRIFE)
+[![Issues](https://img.shields.io/github/issues/Meguvizarchic/MeguvizRIFE?style=flat-square&labelColor=2d3a55)](https://github.com/Meguvizarchic/MeguvizRIFE/issues)
+
+[构建](#构建) · [真实模型验证](#真实模型验证) · [证据与状态](#证据与状态)
+
+</div>
+
+---
+
+<details>
+<summary><b>目录</b></summary>
+
+- [构建](#构建)
+- [真实模型验证](#真实模型验证)
+- [证据与状态](#证据与状态)
+
+</details>
+
+---
 
 独立 RIFE 算法库，已实现真实 v4.6 CPU FP32 reference、旧 CPU FP16 兼容配置，以及 Compute 管理的 Vulkan FP16/FP32、reduced-flow、GPU buffer/AHB 输入输出和完整算法 guard 链。
 公开 C ABI 仅依赖 Compute；不依赖 Media、bil、Android UI，不自行创建或销毁 ncnn GPU 实例。
