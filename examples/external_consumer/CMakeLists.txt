@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.31)
 project(RifeExternalConsumer LANGUAGES C CXX)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-find_package(MeguvizRIFE 1.2.1 CONFIG REQUIRED)
+find_package(MeguvizRIFE 1.2.2 CONFIG REQUIRED)
 add_executable(rife_external main.c)
 target_link_libraries(rife_external PRIVATE MeguvizRIFE::core)
 set_target_properties(rife_external PROPERTIES LINKER_LANGUAGE CXX)

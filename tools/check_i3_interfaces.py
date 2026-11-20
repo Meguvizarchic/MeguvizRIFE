@@ -53,7 +53,7 @@ for label, actual, expected in [("matching", "a" * 64, 0), ("mismatch", "b" * 64
     dep.mkdir(parents=True)
     rife.mkdir()
     (dep / "MeguvizComputeConfig.cmake").write_text('add_library(MeguvizCompute::backend_ncnn_sdk INTERFACE IMPORTED)\nset_property(TARGET MeguvizCompute::backend_ncnn_sdk PROPERTY INTERFACE_MGC_PRIVATE_SDK_FINGERPRINT "' + actual + '")\n')
-    (dep / "MeguvizComputeConfigVersion.cmake").write_text('set(PACKAGE_VERSION "1.2.1")\nset(PACKAGE_VERSION_COMPATIBLE TRUE)\n')
+    (dep / "MeguvizComputeConfigVersion.cmake").write_text('set(PACKAGE_VERSION "1.2.2")\nset(PACKAGE_VERSION_COMPATIBLE TRUE)\n')
     template = (project / "cmake/MeguvizRIFEConfig.cmake.in").read_text()
     configured = template.replace("@PACKAGE_INIT@", "macro(check_required_components name)\nendmacro()").replace("@MGR_PRIVATE_FP@", "a" * 64)
     (rife / "MeguvizRIFEConfig.cmake").write_text(configured)

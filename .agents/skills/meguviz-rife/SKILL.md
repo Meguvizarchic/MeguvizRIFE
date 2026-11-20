@@ -7,7 +7,7 @@ description: 在 C/C++ 中接入 MeguvizRIFE 的双帧插值，或把旧 ncnn RI
 
 ## 选择接入层
 
-- 原生算法、服务或离线双图验证使用 `find_package(MeguvizRIFE 1.2.1 CONFIG REQUIRED)`、`MeguvizRIFE::core` 和 `<meguviz/rife.h>`。找到调用方当前的模型、权重、ncnn/GPU owner、输入与输出的格式和资源归还点。先跑通同一输入上的 CPU 参考或原路径 A/A。
+- 原生算法、服务或离线双图验证使用 `find_package(MeguvizRIFE 1.2.2 CONFIG REQUIRED)`、`MeguvizRIFE::core` 和 `<meguviz/rife.h>`。找到调用方当前的模型、权重、ncnn/GPU owner、输入与输出的格式和资源归还点。先跑通同一输入上的 CPU 参考或原路径 A/A。
 - Android 播放、捕获与显示优先走已配套的 Media API 与单一组合包。新播放器集成用 Media 的帧生成接口维护时钟、补帧预算和原帧回退；直接用 RIFE ABI 时仍由调用方负责这些行为。按已选 SDK 的公开头与包配置匹配依赖，不引入第二个 ncnn owner。
 
 源码构建需同工具链、ABI、CRT 的 Compute ncnn SDK。设置 `MEGUVIZ_COMPUTE_PREFIX`，必要时用对应 `build-info.json` 的私有指纹设 `MGR_REQUIRED_PRIVATE_SDK_FINGERPRINT`。如果编译提示缺少 `<meguviz/shaderpack.h>`，先核对该前缀中的头文件、静态库及 API 是否属于同一套兼容 SDK。调用方提供 `models/catalog/rife46.manifest.json` 匹配的本地 RIFE v4.6 模型，权重随调用方单独管理。

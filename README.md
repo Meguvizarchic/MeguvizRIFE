@@ -9,7 +9,7 @@
 先安装含 ncnn 后端的 [MeguvizCompute SDK](https://github.com/Meguvizarchic/MeguvizCompute)，再按 RIFE 的构建预设设置 `MEGUVIZ_COMPUTE_PREFIX`。安装后，将两份 SDK 的安装目录加入 `CMAKE_PREFIX_PATH`。[构建预设](CMakePresets.json) · [完整 CMake 示例](examples/external_consumer/)
 
 ```cmake
-find_package(MeguvizRIFE 1.2.1 CONFIG REQUIRED)
+find_package(MeguvizRIFE 1.2.2 CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE MeguvizRIFE::core)
 ```
 
