@@ -38,6 +38,8 @@ v4.6 CPU FP32 reference · Vulkan plan · C ABI
 
 GPU 路径已经可以由公开 plan 选择，当前没有取得 GPU 数值等价、AHB 生产者/消费者、设备兼容或性能收益资格。真实呈现与音画属于 Media/宿主的独立验证范围。`models/catalog/profiles.json` 同时记录实现能力、默认值和待验证资格。
 
+在 Codex 中打开本仓库后，输入 `$meguviz-rife` 并指定现有引擎或双帧输入，可接入公开 API 或迁移旧 ncnn 调用。[接入与迁移技能](.agents/skills/meguviz-rife/SKILL.md)
+
 ## 构建
 
 先按 Compute 的说明构建固定 ncnn development SDK，设置 `MEGUVIZ_COMPUTE_PREFIX`，在对应编译器环境运行：

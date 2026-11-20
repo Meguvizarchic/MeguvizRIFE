@@ -65,6 +65,13 @@ int main(int argc,char** argv){
             require(mgr_model_create(domain,&md,&invalid)==MGC_UNSUPPORTED_ABI&&!invalid,"partial model reserved rejects");
         }
         md.header.struct_size=sizeof(md);
+        // A caller may reuse its input buffers once model creation returns.
+        // A new model must reject the changed bytes even with the old declared hash.
+        weights.front() ^= 1;
+        MgrModel* invalid_model=nullptr;
+        require(mgr_model_create(domain,&md,&invalid_model)==MGC_MODEL_MISMATCH&&!invalid_model,
+            "changed model weights reject");
+        graph.front() ^= 1;
         a=input(domain,32,32,0,0);b=input(domain,32,32,2,0);c=input(domain,32,32,3,0);d=input(domain,32,32,4,0);
         // An optional ABI field is either absent or complete; partial values
         // must not silently select a different execution or resource policy.

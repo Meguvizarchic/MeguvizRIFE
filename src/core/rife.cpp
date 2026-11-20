@@ -487,18 +487,21 @@ MgcStatus mgr_model_create(MgcDomain* domain, const MgrModelDesc* d, MgrModel** 
         const auto manifest = mgr_detail::Parser(std::string(reinterpret_cast<const char*>(d->manifest_utf8), size_t(d->manifest_size))).parse();
         const auto expected = mgr_detail::Parser(meguviz::rife::catalog_manifest).parse();
         if (mgr_detail::dump(manifest) != mgr_detail::dump(expected)) return MGC_MODEL_MISMATCH;
-        const std::string graph(reinterpret_cast<const char*>(d->graph_data), size_t(d->graph_size));
-        const std::string weights(reinterpret_cast<const char*>(d->weights_data), size_t(d->weights_size));
         if (d->graph_size != uint64_t(manifest.at("graph").number("size_bytes")) ||
-            d->weights_size != uint64_t(manifest.at("weights").number("size_bytes")) ||
-            mgr_detail::sha256(graph) != manifest.at("graph").text("sha256") ||
+            d->weights_size != uint64_t(manifest.at("weights").number("size_bytes"))) return MGC_MODEL_MISMATCH;
+        // Hash the exact snapshots that will be retained by the model.
+        std::string graph(reinterpret_cast<const char*>(d->graph_data), size_t(d->graph_size));
+        std::string weights(reinterpret_cast<const char*>(d->weights_data), size_t(d->weights_size));
+        if (mgr_detail::sha256(graph) != manifest.at("graph").text("sha256") ||
             mgr_detail::sha256(weights) != manifest.at("weights").text("sha256") ||
             hex(d->graph_sha256) != manifest.at("graph").text("sha256") ||
             hex(d->weights_sha256) != manifest.at("weights").text("sha256")) return MGC_MODEL_MISMATCH;
         if (hex(d->private_sdk_fingerprint) != meguviz::private_sdk_fingerprint()) return MGC_ARTIFACT_MISMATCH;
         auto model = std::make_unique<MgrModel>();
         mgc_domain_retain(domain); model->domain = domain;
-        model->graph = graph; model->weights = weights; model->fingerprint = d->private_sdk_fingerprint;
+        model->graph = std::move(graph);
+        model->weights = std::move(weights);
+        model->fingerprint = d->private_sdk_fingerprint;
         *out = model.release(); return MGC_SUCCESS;
     } catch (const std::bad_alloc&) { return MGC_OUT_OF_MEMORY; }
     catch (...) { return MGC_MODEL_MISMATCH; }
