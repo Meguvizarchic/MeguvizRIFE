@@ -441,7 +441,7 @@ int main(int argc,char** argv) {
             if(reportReady&&contains_path(directory,output_path(report))) {reportReady=false;throw Error(4,"report_inside_shader_output");}
             output=interpolate(spec,true);
         }
-        else if(command=="--version-json") output=J::O{{"version","0.1.0-dev"},{"scope","CPU reference and Compute-owned Vulkan implementation; GPU qualification pending"},{"build_fingerprint",meguviz::rife::build_fingerprint},{"private_sdk_fingerprint",meguviz::private_sdk_fingerprint()}};
+        else if(command=="--version-json") output=J::O{{"version",meguviz::rife::version},{"scope","CPU reference and Compute-owned Vulkan implementation; GPU qualification pending"},{"build_fingerprint",meguviz::rife::build_fingerprint},{"private_sdk_fingerprint",meguviz::private_sdk_fingerprint()}};
         else throw Error(3,"unsupported_command");
         if(reportReady)write(output_path(report),dump(output)+"\n");std::cout<<dump(output)<<'\n';return 0;
     } catch(const Error& e) {

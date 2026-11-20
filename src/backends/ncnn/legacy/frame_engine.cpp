@@ -95,6 +95,23 @@ bool layoutValid(const void* data, int width, int height, std::size_t stride,
     return (h - 1) * stride + rowBytes <= capacity;
 }
 
+bool rgbRangesOverlap(ImageView source, MutableImageView target, std::size_t rowBytes) noexcept {
+    const auto* sourceEnd = source.data + (source.height - 1) * source.strideBytes + rowBytes;
+    const auto* targetEnd = target.data + (target.height - 1) * target.strideBytes + rowBytes;
+    const std::less<const std::uint8_t*> before;
+    return before(source.data, targetEnd) && before(target.data, sourceEnd);
+}
+
+void copyRgbRows(const std::uint8_t* source, std::size_t sourceStride,
+                 MutableImageView target, std::size_t rowBytes) noexcept {
+    if (sourceStride == rowBytes && target.strideBytes == rowBytes) {
+        std::memcpy(target.data, source, rowBytes * static_cast<std::size_t>(target.height));
+        return;
+    }
+    for (int y = 0; y < target.height; ++y)
+        std::memcpy(target.data + y * target.strideBytes, source + y * sourceStride, rowBytes);
+}
+
 bool modelShapeValid(const ncnn::Net& net, bool reducedOnly = false) {
     const auto& inputs = net.input_names();
     const auto& outputs = net.output_names();
@@ -1051,14 +1068,23 @@ Status Engine::processRgb8(ImageView left, ImageView right, double timestep, Mut
         })
         impl_->unreliablePermille.store(0); impl_->patchedTiles.store(0); impl_->histogramPermille.store(0);
         for (auto& timing : impl_->timings) timing.store(0);
-        if (mgr_detail::alpha_endpoint(alphaClass) || !impl_->gpuIo)
-            impl_->staging.resize(rowBytes * static_cast<std::size_t>(left.height));
         if (mgr_detail::alpha_endpoint(alphaClass)) {
             const auto image = alphaClass == mgr_detail::Alpha::Zero ? left : right;
-            for (int y = 0; y < image.height; ++y)
-                std::memcpy(impl_->staging.data() + static_cast<std::size_t>(y) * rowBytes,
-                            image.data + static_cast<std::size_t>(y) * image.strideBytes, rowBytes);
+            if (image.data != output.data || image.strideBytes != output.strideBytes) {
+                if (rgbRangesOverlap(image, output, rowBytes)) {
+                    impl_->staging.resize(rowBytes * static_cast<std::size_t>(image.height));
+                    MutableImageView scratch{impl_->staging.data(), image.width, image.height,
+                                             rowBytes, impl_->staging.size()};
+                    copyRgbRows(image.data, image.strideBytes, scratch, rowBytes);
+                    copyRgbRows(scratch.data, scratch.strideBytes, output, rowBytes);
+                } else {
+                    copyRgbRows(image.data, image.strideBytes, output, rowBytes);
+                }
+            }
         } else {
+            const bool packedOutput = output.strideBytes == rowBytes;
+            if (!packedOutput && !impl_->gpuIo)
+                impl_->staging.resize(rowBytes * static_cast<std::size_t>(left.height));
             const auto began = nowNs();
             impl_->unreliablePermille.store(0);
             impl_->patchedTiles.store(0);
@@ -1110,16 +1136,17 @@ Status Engine::processRgb8(ImageView left, ImageView right, double timestep, Mut
                 }
                 const float factor[3] = {255.f, 255.f, 255.f};
                 visible.substract_mean_normalize(nullptr, factor);
-                visible.to_pixels(impl_->staging.data(), ncnn::Mat::PIXEL_RGB, static_cast<int>(rowBytes));
+                // All input reads and fallible checks are complete. Keep ncnn's
+                // packed conversion and vector grouping even for padded targets.
+                auto* pixels = packedOutput ? output.data : impl_->staging.data();
+                visible.to_pixels(pixels, ncnn::Mat::PIXEL_RGB, static_cast<int>(rowBytes));
             }
             impl_->timings[0].store(prepared - began);
             impl_->timings[1].store(inferred - prepared);
             impl_->timings[2].store(nowNs() - inferred);
+            if (!packedOutput)
+                copyRgbRows(impl_->staging.data(), rowBytes, output, rowBytes);
         }
-        // Commit only a complete valid result; error paths preserve output, including aliased inputs.
-        for (int y = 0; y < output.height; ++y)
-            std::memcpy(output.data + static_cast<std::size_t>(y) * output.strideBytes,
-                        impl_->staging.data() + static_cast<std::size_t>(y) * rowBytes, rowBytes);
         MGR_OBSERVE_JOB(impl_->diagnosticLast.completed=true;)
         return {};
     } catch (const std::bad_alloc&) { return {Code::AllocationFailed}; }

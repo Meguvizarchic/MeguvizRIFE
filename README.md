@@ -31,7 +31,7 @@ v4.6 CPU FP32 reference · Vulkan plan · C ABI
 
 ---
 
-独立 RIFE 算法库，已实现真实 v4.6 CPU FP32 reference、旧 CPU FP16 兼容配置，以及 Compute 管理的 Vulkan FP16/FP32、reduced-flow、GPU buffer/AHB 输入输出和完整算法 guard 链。
+独立 RIFE 算法库，当前版本为 `1.2.1`。已实现真实 v4.6 CPU FP32 reference、旧 CPU FP16 兼容配置，以及 Compute 管理的 Vulkan FP16/FP32、reduced-flow、GPU buffer/AHB 输入输出和完整算法 guard 链。
 公开 C ABI 仅依赖 Compute；不依赖 Media、bil、Android UI，不自行创建或销毁 ncnn GPU 实例。
 
 上一版本已经验证固定权重双 SHA、有界读取、奇数尺寸、alpha 端点、独立旧 CPU 引擎逐字节对照、A/A、失败请求、输出跨 session/plan 关闭存续、纯 C 安装消费及双 ABI 交叉构建。本次功能修改已做必要 Android C++ 与新 shader 编译检查；最终构建、CPU 回归和 GPU 资格统一重新验证，旧版本结果不代替新版本资格。

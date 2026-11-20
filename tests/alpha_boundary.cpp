@@ -1,6 +1,7 @@
 #define main observation_model_unused_main
 #include "observation_model.cpp"
 #undef main
+#include "../src/backends/ncnn/legacy/frame_engine.h"
 #include <cmath>
 #include <limits>
 #if defined(_M_X64) || defined(__x86_64__)
@@ -17,11 +18,60 @@ static void mode_completed(void* data,uint64_t id,MgcStatus status,MgrResult* re
 static double from_bits(uint64_t bits){double value;std::memcpy(&value,&bits,sizeof(value));return value;}
 #endif
 
+static void verify_output_layout(const std::vector<uint8_t>& graph, const std::vector<uint8_t>& weights) {
+    using namespace meguviz::rife::legacy;
+    Options options;
+    options.backend = Backend::Cpu;
+    auto engine = Engine::create(options);
+    require(engine && engine->load({graph.data(), graph.size(), weights.data(), weights.size()}).ok(),
+            "CPU engine for output layout");
+
+    constexpr int width = 37, height = 35;
+    constexpr size_t row = width * 3, padded = row + 7, bytes = row * height;
+    constexpr uint8_t sentinel = 0xa5;
+    const auto a = pixels(width, height, 0);
+    const auto b = pixels(width, height, 3);
+    const ImageView left{a.data(), width, height, row, bytes};
+    const ImageView right{b.data(), width, height, row, bytes};
+    std::vector<uint8_t> packed(bytes, sentinel);
+    std::vector<uint8_t> padded_output(padded * height, sentinel);
+    require(engine->processRgb8(left, right, 0.5, {packed.data(), width, height, row, bytes}).ok(),
+            "packed inferred output");
+    require(engine->processRgb8(left, right, 0.5,
+            {padded_output.data(), width, height, padded, padded_output.size()}).ok(), "padded inferred output");
+    for (int y = 0; y < height; ++y) {
+        const auto first = padded_output.begin() + y * padded;
+        require(std::equal(first, first + row, packed.begin() + y * row), "packed and padded pixels match");
+        require(std::all_of(first + row, first + padded, [sentinel](uint8_t v) { return v == sentinel; }), "row padding unchanged");
+    }
+    const auto previous = packed;
+    require(engine->processRgb8(left, right, 0.5,
+            {packed.data(), width, height, row, bytes - 1}).code == Code::InvalidArgument &&
+            packed == previous, "invalid target does not write output");
+
+    for (size_t source_offset : {size_t(0), size_t(2)}) {
+        for (size_t target_offset : {size_t(0), size_t(2)}) {
+            std::vector<uint8_t> buffer(bytes + 2, sentinel);
+            std::copy(a.begin(), a.end(), buffer.begin() + source_offset);
+            const ImageView source{buffer.data() + source_offset, width, height, row, bytes};
+            const MutableImageView target{buffer.data() + target_offset, width, height, row, bytes};
+            require(engine->processRgb8(source, right, 0.0, target).ok() &&
+                    std::equal(a.begin(), a.end(), buffer.begin() + target_offset), "aliased endpoint copy");
+        }
+    }
+
+    auto aliased = a;
+    const ImageView source{aliased.data(), width, height, row, bytes};
+    require(engine->processRgb8(source, right, 0.5, {aliased.data(), width, height, row, bytes}).ok() &&
+            aliased == packed, "aliased packed inference matches distinct output");
+}
+
 int main(int argc,char** argv){try{
     require(argc==3,"modeldir catalog");
     auto graph=read(std::string(argv[1])+"/flownet.param",1024*1024);
     auto weights=read(std::string(argv[1])+"/flownet.bin",32*1024*1024);
     auto manifest=read(argv[2],1024*1024);
+    verify_output_layout(graph, weights);
     MgcBuildInfo bi{};bi.header=MGC_HEADER_INIT(MgcBuildInfo);check(mgc_query_build_info(&bi),"build info");
     MgcRuntimeDesc rd{};rd.header=MGC_HEADER_INIT(MgcRuntimeDesc);rd.provider=MGC_PROVIDER_NCNN_CPU;rd.memory_budget_bytes=64ULL*1024*1024;
     MgcRuntime* rt=nullptr;check(mgc_runtime_create(&rd,&rt),"runtime");

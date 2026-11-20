@@ -1,6 +1,6 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
-find_dependency(MeguvizCompute 0.1 CONFIG)
+find_dependency(MeguvizCompute 1.2.1 CONFIG)
 if(NOT TARGET MeguvizCompute::backend_ncnn_sdk)
   set(MeguvizRIFE_FOUND FALSE)
   set(MeguvizRIFE_NOT_FOUND_MESSAGE "The exact Compute private ncnn SDK target is required")

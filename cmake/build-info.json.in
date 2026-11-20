@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "0.1.0-dev",
+  "version": "@PROJECT_VERSION@",
   "build_fingerprint": "@MGR_BUILD_FP@",
   "private_sdk_fingerprint": "@MGR_PRIVATE_FP@",
   "target_system": "@CMAKE_SYSTEM_NAME@",
