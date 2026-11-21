@@ -1,34 +1,29 @@
-# Retained inference work
+# 推理任务与输出所有权
 
-The official accepted-job path stores a strong continuation in the job and
-passes it through GPU IO, GPU/CPU bridge and the compatibility recorder. Work
-keeps the Engine implementation, extractors, GPU/host Mats, patch data and
-delayed host targets alive. The internal output WRITE lease is also a Compute
-submission reference, not merely a field of the job.
-After physical retirement and Work cleanup, that internal submission reference
-is relinquished before the owned READ result is published. The job's writer
-protects the handoff window; afterwards the result protects the output. A
-consumer that releases the result in its callback can reuse a one-slot pool.
+本文说明已接受的 `mgr_submit` 请求在底层推理队列、GPU/CPU 桥接以及结果发布之间的资源持有与释放规则。
 
-GPU IO records prepare, inference and final-patch stages once. The bridge keeps
-upload, nested inference and download state. The compatibility recorder retains
-its original upload/reduced graph/download/guard/pixel operations; split host
-extraction shares the old ncnn packing/cast/detach implementation and actual
-recording-time FP/OpenMP environment.
+## 任务延续对象与结果交接
 
-When a complete batch is only waiting for retirement, its host steps and later
-stages resume after physical confirmation and host finalization. A partial or
-failed graph is finalized as failure after its submitted work retires; it does
-not resume as success. Cancellation similarly discards output only after the
-required physical cleanup.
+正式任务路径会在任务内部持有一个强引用延续对象（`Work`），并穿透传递给 GPU IO、CPU/GPU 桥接层及兼容录制器。`Work` 负责在整个推理期间保活底层引擎实现、`Extractor`、GPU 与宿主 `Mat`、分块修补数据以及延迟宿主目标。
 
-An inference-owner token prevents another job, reconfiguration or close from
-modifying the same Engine. Diagnostics belong to each Work until the completed
-observation is published. Record callbacks acquire their own Engine mutex, so
-they can run later after deferred AHB readiness without relying on a vanished
-call stack. User leases and plan references are returned outside GPU cleanup.
+内部用于写入输出的 `WRITE` 租约本身也是一份 Compute 提交引用，而不仅是任务结构体中的一个普通字段：
 
-These changes establish the retained accepted RIFE path. They do not qualify
-all generic Compute consumers, sync-fd probes, real Android AHB execution,
-device-loss recovery or every numerical/quality profile. Small fixed-model
-pixel comparisons are scoped evidence, not full visual or performance approval.
+1. 在底层任务全部结束并完成 `Work` 清理后，RIFE 会先释放内部的写入提交引用，再把只读（`READ`）的 `MgrResult` 交付给回调。
+2. 在写入方退出与结果交付的交接窗口期内，写入锁负责保护输出缓冲；交付之后改由 `MgrResult` 自身保活该输出。
+3. 只要消费者在回调结束时及时调用 `mgr_result_release`，即使将 `output_pool_capacity` 设为 1 槽也能正常复用。
+
+## 三类执行路径的资源保留
+
+- **GPU IO 路径**：按准备、推理、最终像素修补三个阶段单次录制执行命令。
+- **CPU/GPU 桥接路径**：显式持有输入上传、嵌套推理和结果下载所需的中间状态。
+- **兼容录制器路径**：沿用原有的上传、降采样图、下载、保护统计和像素操作；拆分后的宿主提取继续复用既有的 ncnn 打包、类型转换与分离实现，并保持录制期的浮点及 OpenMP 环境设置。
+
+## 等待完成、失败收尾与取消规则
+
+- **正常与异常完成**：当完整批次处于等待结束状态时，后续宿主步骤与阶段会在底层执行确认后继续推进；对于部分执行或失败的图，必须在所有已提交任务彻底结束并归还资源后才标记为失败，绝不会错误恢复为成功。
+- **逻辑取消**：`mgr_cancel` 只负责在任务完成后丢弃输出发布，不会在底层工作结束前提前销毁命令或输入租约。
+- **引擎隔离与线程锁**：推理所有者令牌（owner token）会阻止其他任务、重配置或关闭操作同时修改同一个引擎；逐任务诊断数据由各 `Work` 独立保存，直到观测结果发布。录制回调会自行获取引擎互斥锁，从而支持在异步 AHB 就绪后延迟执行，不依赖已退出的调用栈帧。用户的输入租约与计划引用都会在 GPU 清理范围之外安全归还。
+
+## 适用范围与验证说明
+
+上述规则用于界定正式被接收的 RIFE 请求在单次推理期间的所有权生命周期，尚不能自动证明泛化 Compute 消费者、特定设备的 `SYNC_FD` 探测、真机 Android AHB 执行、设备丢失恢复或全部精度档位均已通过验收；局部固定模型的像素对比仅覆盖有限测试集，实际设备画质与性能须在目标宿主环境下单独验证。

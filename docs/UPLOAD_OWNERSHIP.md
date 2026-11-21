@@ -1,43 +1,33 @@
-# Model-upload ownership and explicit service
+# 模型上传所有权与显式清理服务
 
-The official ncnn backend uses a pre-created transfer owner for every model
-network. The immutable Engine holds the main network, reduced-resolution and
-adaptive-scale networks, their transfer commands, copied model bytes, custom
-layers, actual allocators, shaderpack references and Compute domain owner.
-Network and command objects are installed before model upload may submit.
-The exact private source SDK and its complete patch ledger must be rebuilt
-together; individual candidate command objects must not replace an older SDK.
+本文说明 RIFE ncnn 后端在模型参数上传过程中的对象持有策略，以及建计划失败后的残留清理机制。
 
-An unsuccessful `mgr_plan_create` can leave real upload work pending while
-returning no plan. The failed Engine transfers its complete implementation to a
-pre-reserved slot. Model/domain caller references may be dropped afterwards;
-the upload owner keeps the objects it needs. This does not permit unloading the
-library or destroying external objects that the caller separately owns.
+## 预建传输所有者与对象安装
 
-Call `mgr_uploads_poll(domain, wait_ns)` from a worker to service abandoned
-uploads of one exact origin domain. A null domain explicitly services this
-module's abandoned uploads. Zero polls rather than waiting to acquire the GPU
-execution slot. Each transfer wait is limited to 100 ms; multiple transfers and
-driver calls are not a hard wall-clock API deadline.
+正式的 ncnn 后端会为每张模型网络预先创建传输所有者。不可变引擎在构造时持有主网络、降分辨率网络和自适应尺度网络，以及对应的传输命令对象、模型字节拷贝、自定义层、实际内存分配器、着色器包引用和 Compute 域所有者。
 
-SUCCESS means that no matching abandoned upload remains at that observation.
-It does not mean a previously failed plan is now available. The caller must
-explicitly retry plan creation, or continue shutdown. It also does not drain
-live Engines, accepted inference jobs or consumer-owned outputs. BUSY retains
-all required objects and allows another service attempt.
+网络与命令对象必须先安装完毕，才允许提交模型权重上传。修改或更新私有源码 SDK 及其补丁时必须整套同步重编，禁止用单个候选目标文件去替换旧版 SDK 产物。
 
-There are 16 pre-reserved Engine slots in the module and a separate Compute
-owner limit per actual device. These are object-count admission limits, not a
-bound on total network, GPU or driver memory. Permanent unknown retirement may
-keep a slot occupied. No completion, fence satisfaction or successful close is
-fabricated to reclaim capacity.
+## 建计划失败后的移交与显式清理
 
-The host must keep its loader reference through service, successful owner
-release and return from the API. Official single-DSO/static composition covers
-the Engine callbacks with that code-image lifetime. Separately loaded RIFE
-modules need their own code-image agreement.
+当 `mgr_plan_create` 执行失败时，可能无法返回有效的 `MgrPlan`，但底层仍留有未结束的模型上传任务：
 
-This model-upload path does not repair the old self-owned ncnn model-loading
-entry, VkCompute hidden-submit failure retirement, inference Work/output leases,
-AHB/FD retirement or unified device-loss recovery. Those paths retain separate
-implementation and validation gates.
+1. 失败的引擎会将其完整实现移交给模块内预先保留的专用槽位。
+2. 随后调用方可以正常释放本地持有的模型与域引用，上传所有者会继续保活所需对象；但请注意，这并不允许直接卸载动态库或销毁仍由调用方单独托管的外部对象。
+3. 由工作线程定期调用 `mgr_uploads_poll(domain, wait_ns)` 推进清理：
+   - 传入精确的 `domain` 仅清理来自该域的遗留上传；传入 `NULL` 则清理当前模块所有遗留上传。
+   - `wait_ns` 单次传输等待上限为 `100 ms`（`100000000` ns）；传入 `0` 时直接进行非阻塞轮询，不等待获取 GPU 执行槽位。多次传输与驱动调用整体上不承诺硬实时壁钟上限。
+
+## 返回值含义与容量上限
+
+- **`MGC_SUCCESS`**：表示在本次观察时刻已无匹配的遗留上传任务；它**不代表**此前失败的计划已经变为可用（调用方须显式重新调用 `mgr_plan_create`，或继续走关闭流程），也不负责排空仍在运行的引擎、已接受的推理任务或消费者持有的输出。
+- **`MGC_BUSY`**：表示仍有底层任务未完成，所有必需对象会继续保留，调用方应稍后再次轮询。
+- **槽位计数上限**：模块内预留 16 个引擎槽位，同时 Compute 对每个物理设备另有独立的所有者数量限制。这些均属于对象个数上限，而非网络体积、GPU 显存或驱动内存上限。若出现永久未知状态的悬挂任务，对应槽位会保持占用，库不会伪造完成或围栏就绪信号来强行回收容量。
+
+## 加载器保活要求
+
+在调用清理服务、等待所有者释放以及 `mgr_uploads_poll` 返回前，宿主进程必须持续保活动态库加载器引用。在官方单一动态库或静态链接组合中，该代码映像寿命由组合入口共同覆盖；若使用独立加载的 RIFE 模块，调用方须自行维持对应的代码映像生命周期。
+
+## 适用范围与验证说明
+
+上述机制针对模型参数上传失败后的所有权回收，并不替代旧版自建 ncnn 加载入口、`VkCompute` 隐藏提交失败处理、推理任务输出租约、AHB/FD 清理或设备丢失后的全局恢复流程；相关路径各自保留独立的实现与验证门禁。

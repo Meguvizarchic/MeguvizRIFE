@@ -1,4 +1,4 @@
 interface:
-  display_name: "MeguvizRIFE 接入"
-  short_description: "接入双帧插值，或迁移旧 ncnn RIFE 模型与任务调用"
-  default_prompt: "请用 $meguviz-rife 检查当前插帧实现，找到合适的接入层，完成最小迁移并验证双帧输出。"
+  display_name: "MeguvizRIFE 接入与迁移"
+  short_description: "接入双帧插值内核或迁移旧 ncnn RIFE 调用"
+  default_prompt: "请使用 $meguviz-rife 检查当前工程，制定最小接入或迁移方案，完成代码适配并运行验证。"
